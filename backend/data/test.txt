@@ -1,0 +1,14 @@
+This is a test document about Retrieval Augmented Generation.
+
+RAG systems are powerful because they combine:
+1. Document retrieval from a knowledge base
+2. Language model generation using retrieved context
+3. Citation of sources in responses
+
+RAG is used in:
+- AI chatbots for customer support
+- Enterprise search engines
+- Knowledge base systems
+- Medical information retrieval
+
+The main benefit of RAG is reducing hallucinations by grounding answers in real documents.
