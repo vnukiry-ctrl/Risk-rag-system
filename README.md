@@ -9,11 +9,16 @@ A professional Retrieval Augmented Generation (RAG) system built with:
 
 ## Project Overview
 
-This is a project to build a production-ready RAG system from scratch. It demonstrates:
-- Document loading and chunking
+A production-ready RAG system that demonstrates professional software architecture and best practices for building intelligent document retrieval systems. The system combines semantic search with large language models to provide accurate, source-attributed answers from custom knowledge bases.
+
+## Features
+
+- Multi-format document loading (PDF, DOCX, TXT)
+- Intelligent document chunking and preprocessing
 - Semantic search with embeddings
 - LLM-based generation with source attribution
-- Professional backend/frontend architecture
+- Conversational chat interface
+- Production-ready API architecture
 
 ## Tech Stack
 
@@ -58,4 +63,4 @@ pip install streamlit requests
 - [ ] Step 10: Deployment
 
 ## Author
-Built as a professional RAG system learning project.
+Victoria Nukiry
