@@ -1,13 +1,19 @@
-venv/
-backend/venv/
-frontend/venv/
+# Data files
+backend/data/*.pdf
+backend/data/*.txt
+backend/data/*.docx
+
+# Environment
+.env
+.env.local
+
+# Python
 __pycache__/
 *.pyc
-.env
-.DS_Store
-*.log
-.pytest_cache/
+.venv/
+venv/
+
+# IDE
+.vscode/
 .idea/
-*.egg-info/
-dist/
-build/
+*.swp
