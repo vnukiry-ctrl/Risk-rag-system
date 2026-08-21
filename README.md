@@ -90,28 +90,29 @@ Search + Q&A + Analytics
 ## 📁 Project Structure
 Risk-rag-system/
 ├── backend/
-│ ├── venv/ # Virtual environment
-│ ├── data/ # 11 insurance PDFs
-│ ├── main.py # FastAPI application
-│ ├── test.py # Working test server
-│ ├── insurance_loader.py # LLM-based extraction (70%+ accuracy)
-│ ├── list_models.py # Groq model discovery tool
-│ ├── vector_store.py # Qdrant integration
-│ ├── loader.py # Generic document loader
-│ ├── debug_extract.py # Debugging utilities
-│ ├── requirements.txt # Dependencies
-│ └── .env # API keys (GROQ_API_KEY)
+│   ├── venv/
+│   ├── data/
+│   ├── main.py
+│   ├── test.py
+│   ├── insurance_loader.py
+│   ├── list_models.py
+│   ├── vector_store.py
+│   ├── loader.py
+│   ├── debug_extract.py
+│   ├── requirements.txt
+│   ├── .env                  ← Keep private (in .gitignore)
+│   └── .env.example          ← NEW! Share this
 │
 ├── frontend/
-│ ├── venv/ # Virtual environment
-│ ├── app.py # Streamlit dashboard
-│ └── requirements.txt # Dependencies
+│   ├── venv/
+│   ├── app.py
+│   └── requirements.txt
 │
-├── .gitignore # Exclude sensitive files
-├── README.md # This file
-├── DOCUMENTATION.md # Technical deep-dive
-├── CONTINUATION.md # Next session continuation
-└── .git/ # Full git history
+├── .gitignore
+├── README.md
+├── DOCUMENTATION.md
+├── CONTINUATION.md
+└── .git/
 
 ---
 
@@ -251,7 +252,7 @@ curl -X POST http://localhost:8000/query \
 
 ```python
 {
-    "policy_number": "BW240599",
+    "policy_number": "BW***",
     "insurance_type": "Personal Accident Insurance",
     "insurance_company": "Lloyd's Underwriters",
     "broker": "Burns & Wilcox Canada ULC",
@@ -260,12 +261,12 @@ curl -X POST http://localhost:8000/query \
     "insured_address": "4825 Mt. Royal Gate SW, Calgary, Alberta T3E 6K6",
     "period_from": "September 1, 2024",
     "period_to": "September 1, 2025",
-    "premium_amount": "25000",
-    "coverage_limit": "1000000",
+    "premium_amount": "350**0",
+    "coverage_limit": "10**",
     "deductible": "50000",
     "key_coverages": ["Personal Accident", "Medical Expenses", "Loss of Income"],
     "exclusions": ["Pre-existing conditions", "High-risk activities"],
-    "source_file": "Mount Royal University - BW240599 (Policy).pdf"
+    "source_file": "Mount Royal University - BW**** (Policy).pdf"
 }
 ```
 
