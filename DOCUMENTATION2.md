@@ -1296,3 +1296,98 @@ streamlit run app.py
 
 **Last Updated:** August 19, 2026  
 **Status:** Steps 1-8 Complete (Core Functionality Working)
+
+---
+---
+
+## STEP 9: MILESTONE 1 HARDENING — Cleaning, Chunking, Error Handling, Logging
+
+**Date Completed:** August 24, 2026  
+**Status:** ✅ COMPLETE
+
+### What We Built
+
+Milestone 1 (Core Data Pipeline) had working LLM extraction from Step 6, but no text cleaning, an unused/unreliable chunking strategy, silent failures, and print-only diagnostics. This step closed all four gaps.
+
+---
+
+#### 1. Text Normalization
+
+**Problem:** PyMuPDF preserves the original PDF page layout, so extracted text is full of lines that are empty except for spaces (column/table artifacts). That noise ate into the 8,000-character sample sent to the LLM for metadata extraction, and diluted the chunks used for embedding search.
+
+**Fix:** Added `normalize_text()` in `insurance_loader.py` — strips whitespace-only lines, collapses blank-line runs, collapses repeated spaces. Applied to every document (PDF and TXT) right after extraction, before both LLM extraction and chunking.
+
+**Also removed:** a dead code path in `extract_text_from_pdf()` that called `page.get_text("blocks")` and tried to iterate it as if it returned dicts. Confirmed via testing that `"blocks"` mode returns tuples, so the `isinstance(block, dict)` check was always `False` — it ran on every page and did nothing.
+
+**Measured effect** (45-page Mount Royal policy PDF): overall text reduced 111,430 → 107,050 characters (3.9% noise removed); non-whitespace content in the first 8,000 characters (the LLM's extraction window) increased from 6,285 to 6,657 characters (~6% more real content in the same budget).
+
+---
+
+#### 2. Chunking Strategy: Parent-Child (Size-Based)
+
+**Problem:** `insurance_loader.py` had a `chunk_by_sections()` method that split documents on `SECTION X:` headers — but it was never actually wired into indexing (`vector_store.py` re-split the raw text independently), and testing against all 9 real documents showed the regex was unreliable: 4 of 9 documents had zero `SECTION` matches at all, and most "matches" that did occur were the word "section" appearing mid-sentence in prose, not real headers.
+
+**Decision:** Since more documents (of varying formats) will be added later, we chose not to build retrieval around document structure that isn't consistently present. Deleted `chunk_by_sections()` entirely.
+
+**Fix:** Implemented size-based parent-child ("small-to-big") chunking in `vector_store.py`'s `index_documents()`:
+- Each document is split into **parent chunks** (~2,000 characters) for context.
+- Each parent is further split into **child chunks** (~400 characters), which are what get embedded — small chunks retrieve more precisely.
+- Each child's stored payload carries its own text and its parent's full text.
+- `semantic_search()` matches against child embeddings but returns the parent text, so a precise match still comes back with surrounding context instead of an isolated fragment. Results are deduplicated by parent (multiple children of one parent can all match the same query).
+
+**Verified:** indexed 3 real documents → 432 child chunks; a test query returned deduplicated ~1,900–2,000 character parent passages (not tiny fragments), confirming the pipeline works end-to-end with Qdrant + Ollama.
+
+---
+
+#### 3. Error Handling
+
+**Problem:** Failures were being silently dropped. An unreadable PDF (`extract_text_from_pdf()` returning `""`) triggered a bare `continue` with no record anywhere — the caller had no way to know the file was even attempted. `/extract`'s response mixed successful and failed documents into one list. A failure in `index_documents()` (e.g. Ollama not running) would 500 the entire `/extract` call and discard already-completed LLM extraction work.
+
+**Fix:**
+- Added `_error_record()` helper (reused across all failure paths) producing a consistent `{"error", "source_file", "extracted_date"}` shape — the same shape `extract_metadata_with_llm()` already used for its own error returns.
+- Unreadable PDFs and unexpected per-file exceptions now append an error record instead of vanishing.
+- `/extract`'s response splits into `successful` / `failed` lists.
+- Indexing failures are caught separately from extraction failures, so a broken embedding service no longer discards extraction work — the response includes `chunks_indexed: 0` and an `indexing_error` message instead.
+- `vector_store.py`'s Ollama HTTP call now raises a clear, actionable `RuntimeError` (e.g. "Could not reach Ollama at http://localhost:11434 — is it running?") instead of surfacing a raw `requests` traceback.
+
+**Verified:** tested with a corrupted PDF (confirmed it now produces a visible error record) and an unreachable Ollama endpoint (confirmed the clear `RuntimeError` message).
+
+---
+
+#### 4. Logging
+
+**Problem:** All diagnostics were `print()` statements — no timestamps, no severity levels, no way to distinguish routine progress from a real failure, and nothing captured if this ran outside an interactive terminal. `extract_metadata_with_llm()`'s exception handlers only logged `str(e)`, discarding the actual traceback.
+
+**Fix:**
+- Configured Python's standard `logging` module once in `main.py` (`logging.basicConfig`, level from `LOG_LEVEL` env var, default `INFO`).
+- Replaced all `print()` calls in `insurance_loader.py` and `vector_store.py` with `logger.info` / `logger.warning` / `logger.error(..., exc_info=True)` as appropriate. Condensed the previous 8-line-per-document field dump into a single `INFO` line.
+- Added logging to `/extract` and `/query` request handling in `main.py`, including `logger.exception(...)` before every `HTTPException`.
+- `vector_store.py`'s `index_documents()` — previously silent — now logs chunk counts on start and finish.
+
+**Real-world validation:** while testing, repeated extraction runs exhausted the Groq API's daily token quota (200,000 TPD). This surfaced a real bug: `load_insurance_documents()` was logging `"Extracted <file>: policy=N/A..."` (implying success) even when metadata extraction had actually failed with a `429 Rate Limit` error. Fixed by checking for `"error"` in the returned metadata and logging a `WARNING` instead of a false `INFO` success line. Also confirmed the per-file exception handling correctly let the loop continue through all 9 documents despite every one failing on that run — the pipeline degrades gracefully under a real, non-code failure (API quota) rather than crashing.
+
+---
+
+### Decision Log
+
+**Decision:** Size-based parent-child chunking over header-based chunking  
+**Date:** August 24, 2026  
+**Rationale:** Section-header regex only matched 5 of 9 real documents reliably, and more documents (potentially other formats) will be added in deployment. Structure-agnostic chunking works the same regardless of document formatting.  
+**Status:** ✅ APPROVED
+
+**Decision:** Reuse the existing error-dict convention instead of introducing exceptions or a new error framework  
+**Date:** August 24, 2026  
+**Rationale:** `extract_metadata_with_llm()` already returned `{"error": ...}` dicts on failure; extending that same shape to PDF-read and per-file failures keeps the codebase consistent without adding a new pattern for a project this size.  
+**Status:** ✅ APPROVED
+
+---
+
+### Files Changed
+- `backend/insurance_loader.py` — normalization, error records, logging, removed dead chunking code
+- `backend/vector_store.py` — parent-child chunking, indexing error handling, logging
+- `backend/main.py` — logging config, request-level logging, split successful/failed response, isolated indexing failures
+
+---
+
+**Last Updated:** August 24, 2026  
+**Status:** Milestone 1 (Core Data Pipeline) Complete

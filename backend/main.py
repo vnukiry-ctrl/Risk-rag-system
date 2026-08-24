@@ -1,13 +1,22 @@
+import logging
+import os
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
-import os
 from insurance_loader import load_insurance_documents
-from openai import OpenAI
+from vector_store import index_documents, semantic_search
+from llm_client import llm_complete
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Insurance RAG System",
@@ -21,11 +30,6 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-)
-
-groq_client = OpenAI(
-    api_key=os.getenv("GROQ_API_KEY"),
-    base_url="https://api.groq.com/openai/v1"
 )
 
 documents_db = {}
@@ -43,16 +47,43 @@ async def root():
 
 @app.post("/extract")
 async def extract_documents():
+    logger.info("Extraction requested")
     try:
         results = load_insurance_documents()
-        extracted = []
-        for meta in results["metadata"]:
-            extracted.append(meta)
-            doc_id = meta.get("policy_number") or meta.get("source_file", "unknown")
-            documents_db[doc_id] = meta
-        return {"total": len(extracted), "documents": extracted}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Document loading failed")
+        raise HTTPException(status_code=500, detail=f"Document loading failed: {str(e)}")
+
+    successful = []
+    failed = []
+    for meta in results["metadata"]:
+        doc_id = meta.get("policy_number") or meta.get("source_file", "unknown")
+        documents_db[doc_id] = meta
+        (failed if "error" in meta else successful).append(meta)
+
+    # Indexing calls an external embedding service (Ollama) and can fail
+    # independently of extraction; don't let that discard the extraction
+    # work that already succeeded.
+    chunks_indexed = 0
+    indexing_error = None
+    try:
+        chunks_indexed = index_documents(results["parent_chunks"])
+    except Exception as e:
+        logger.exception("Indexing failed")
+        indexing_error = str(e)
+
+    logger.info(
+        "Extraction complete: %d successful, %d failed, %d chunks indexed",
+        len(successful), len(failed), chunks_indexed,
+    )
+
+    return {
+        "total": len(successful) + len(failed),
+        "successful": successful,
+        "failed": failed,
+        "chunks_indexed": chunks_indexed,
+        "indexing_error": indexing_error,
+    }
 
 
 @app.get("/documents")
@@ -102,49 +133,72 @@ async def query_documents(request: QueryRequest):
     if not request.question:
         raise HTTPException(status_code=400, detail="question required")
 
+    logger.info("Query received: %r (top_k=%d)", request.question, request.top_k)
+
     try:
-        valid_docs = {k: v for k, v in documents_db.items() if "error" not in v}
-        sources = list(valid_docs.keys())[:request.top_k]
+        chunks = semantic_search(request.question, top_k=request.top_k)
 
-        if valid_docs:
-            context = "Context from insurance documents:\n\n"
-            for doc_key in sources:
-                doc = valid_docs[doc_key]
-                context += f"=== {doc_key} ===\n"
-                context += f"Company: {doc.get('insurance_company', 'N/A')}\n"
-                context += f"Policy Type: {doc.get('insurance_type', 'N/A')}\n"
-                context += f"Policy Number: {doc.get('policy_number', 'N/A')}\n"
-                context += f"Insured: {doc.get('insured_name', 'N/A')}\n"
-                context += f"Period: {doc.get('period_from', 'N/A')} to {doc.get('period_to', 'N/A')}\n"
-                context += f"Premium: ${doc.get('premium_amount', 'N/A')}\n"
-                context += f"Coverage Limit: {doc.get('coverage_limit', 'N/A')}\n"
-                if doc.get('key_coverages'):
-                    context += f"Coverages: {', '.join(doc.get('key_coverages', []))}\n"
-                context += "\n"
+        if chunks:
+            # Structured fields (policy #, limits, dates) are extracted once per whole
+            # document and are more reliable for simple facts than a handful of raw
+            # excerpts, which can surface an unrelated dollar figure (e.g. a deductible)
+            # instead of the actual coverage limit. Give the LLM both.
+            by_source = {
+                doc.get("source_file"): doc
+                for doc in documents_db.values()
+                if "error" not in doc
+            }
+            summarized_sources = set()
+            context = ""
+
+            summary_lines = []
+            for c in chunks:
+                doc = by_source.get(c["source_file"])
+                if doc and c["source_file"] not in summarized_sources:
+                    summarized_sources.add(c["source_file"])
+                    summary_lines.append(
+                        f"- {c['source_file']}: policy {doc.get('policy_number', 'N/A')}, "
+                        f"insurer {doc.get('insurance_company', 'N/A')}, "
+                        f"type {doc.get('insurance_type', 'N/A')}, "
+                        f"coverage limit {doc.get('coverage_limit', 'N/A')}, "
+                        f"deductible {doc.get('deductible', 'N/A')}, "
+                        f"premium {doc.get('premium_amount', 'N/A')}, "
+                        f"period {doc.get('period_from', 'N/A')} to {doc.get('period_to', 'N/A')}"
+                    )
+            if summary_lines:
+                context += "Structured policy summary (authoritative for these fields):\n"
+                context += "\n".join(summary_lines) + "\n\n"
+
+            context += "Relevant excerpts from insurance documents:\n\n"
+            for c in chunks:
+                context += f"=== {c['source_file']} (policy {c.get('policy_number') or 'N/A'}) ===\n"
+                context += f"{c['text']}\n\n"
         else:
-            context = "No documents loaded. Please extract documents first."
+            context = "No relevant document excerpts found. Please run /extract first if you haven't."
 
-        prompt = f"{context}\n\nUser Question: {request.question}\n\nProvide a clear, accurate answer based on the insurance documents above. If the answer is not in the documents, say so."
+        prompt = f"{context}\n\nUser Question: {request.question}\n\nProvide a clear, accurate answer using the summary and excerpts above. Prefer the structured policy summary for simple facts like limits, premiums, and dates. If the answer is not covered, say so."
 
-        response = groq_client.chat.completions.create(
-            model="openai/gpt-oss-120b",
+        answer = llm_complete(
             messages=[
-                {"role": "system", "content": "You are an expert insurance policy analyst. Answer questions about insurance documents accurately and helpfully. If information is not in the provided documents, clearly state that."},
+                {"role": "system", "content": "You are an expert insurance policy analyst. Answer questions about insurance documents accurately and helpfully. If information is not in the provided excerpts, clearly state that."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.7,
-            max_tokens=500
+            max_tokens=500,
         )
 
-        answer = response.choices[0].message.content
+        sources = [{"source_file": c["source_file"], "policy_number": c.get("policy_number"), "score": c["score"]} for c in chunks]
+
+        logger.info("Query answered using %d chunks", len(chunks))
 
         return {
             "question": request.question,
             "answer": answer,
             "sources": sources,
-            "documents_searched": len(documents_db)
+            "chunks_searched": len(chunks)
         }
     except Exception as e:
+        logger.exception("Query failed")
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
 

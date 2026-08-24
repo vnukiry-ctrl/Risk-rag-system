@@ -1,26 +1,49 @@
+import logging
 import os
 import json
 import re
 from datetime import datetime
-from typing import List, Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional
 from pypdf import PdfReader
-from openai import OpenAI
+from llm_client import llm_complete, LLM_PROVIDER, MODEL
 from dotenv import load_dotenv
 
 load_dotenv()
 
+logger = logging.getLogger(__name__)
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_DATA_FOLDER = os.path.join(BASE_DIR, "data")
 
+_MULTI_BLANK_RE = re.compile(r"\n{3,}")
+_MULTI_SPACE_RE = re.compile(r"[ \t]{2,}")
+
+
+def _error_record(filename: str, error: str) -> Dict:
+    """Build the standard error-metadata shape used whenever a document can't be processed."""
+    return {
+        "error": error,
+        "source_file": filename,
+        "extracted_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+def normalize_text(text: str) -> str:
+    """Collapse PDF layout whitespace noise without touching real content.
+
+    PyMuPDF preserves the source page layout, so extracted text is full of
+    lines that are empty except for spaces (column/table artifacts). Left
+    in place, that noise eats into the 8000-char sample sent to the LLM and
+    dilutes the chunks used for embedding search.
+    """
+    lines = [line.strip() for line in text.split("\n")]
+    text = "\n".join(lines)
+    text = _MULTI_BLANK_RE.sub("\n\n", text)
+    text = _MULTI_SPACE_RE.sub(" ", text)
+    return text.strip()
+
 
 class InsuranceDocumentParserLLM:
-    def __init__(self):
-        self.client = OpenAI(
-            api_key=os.getenv("GROQ_API_KEY"),
-            base_url="https://api.groq.com/openai/v1"
-        )
-        self.model = "openai/gpt-oss-120b"
-    
     def extract_metadata_with_llm(self, text: str, filename: str) -> Dict:
         """Use Groq to intelligently extract metadata from insurance document"""
         
@@ -63,16 +86,11 @@ CRITICAL RULES:
 - For amounts, return only numbers (e.g., "25000" not "$25,000")"""
 
         try:
-            message = self.client.chat.completions.create(
-                model=self.model,
-                max_tokens=1500,
+            response_text = llm_complete(
+                messages=[{"role": "user", "content": prompt}],
                 temperature=0,
-                messages=[
-                    {"role": "user", "content": prompt}
-                ]
-            )
-            
-            response_text = message.choices[0].message.content.strip()
+                max_tokens=1500,
+            ).strip()
             
             # Remove markdown if present
             response_text = re.sub(r'```json\n?', '', response_text)
@@ -81,12 +99,8 @@ CRITICAL RULES:
             
             # Validate JSON before parsing
             if not response_text.startswith('{'):
-                print(f"  Warning: Response doesn't start with JSON")
-                return {
-                    "error": "Invalid LLM response format",
-                    "source_file": filename,
-                    "extracted_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                }
+                logger.warning("%s: LLM response doesn't start with JSON", filename)
+                return _error_record(filename, "Invalid LLM response format")
             
             # Parse JSON
             metadata = json.loads(response_text)
@@ -118,59 +132,21 @@ CRITICAL RULES:
             # Add metadata
             metadata["extracted_date"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             metadata["source_file"] = filename
-            metadata["extraction_method"] = "Groq LLM (openai/gpt-oss-120b)"
+            metadata["extraction_method"] = f"{LLM_PROVIDER} LLM ({MODEL})"
             
             return metadata
             
         except json.JSONDecodeError as e:
-            print(f"  Error parsing JSON: {str(e)}")
-            print(f"  Response was: {response_text[:200]}")
-            return {
-                "error": f"JSON parse error: {str(e)}",
-                "source_file": filename,
-                "extracted_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            }
+            logger.error("%s: JSON parse error: %s | response was: %s", filename, e, response_text[:200])
+            return _error_record(filename, f"JSON parse error: {str(e)}")
         except Exception as e:
-            print(f"  Error calling Groq API: {str(e)}")
-            return {
-                "error": str(e),
-                "source_file": filename,
-                "extracted_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            }
+            logger.error("%s: LLM API call failed", filename, exc_info=True)
+            return _error_record(filename, str(e))
     
-    def chunk_by_sections(self, text: str) -> List[Dict]:
-        """Chunk document by SECTION headers"""
-        chunks = []
-        sections = re.split(r'(SECTION\s+[\d\w]+[:\s]+[^\n]+)', text)
-        current_section_title = None
-        
-        for i, part in enumerate(sections):
-            if re.match(r'SECTION\s+[\d\w]+', part, re.IGNORECASE):
-                current_section_title = part.strip()
-            elif part.strip() and current_section_title:
-                chunk = {
-                    "content": part.strip(),
-                    "section": current_section_title,
-                    "type": "child"
-                }
-                chunks.append(chunk)
-        
-        return chunks
-    
-    def parse_document(self, text: str, filename: str) -> Tuple[Dict, str, List[Dict]]:
+    def parse_document(self, text: str, filename: str) -> Tuple[Dict, str]:
         """Parse insurance document using Groq LLM"""
-        
         metadata = self.extract_metadata_with_llm(text, filename)
-        parent_content = text
-        child_chunks = self.chunk_by_sections(text)
-        
-        for chunk in child_chunks:
-            chunk["metadata"] = metadata
-            chunk["policy_number"] = metadata.get("policy_number")
-            chunk["insurance_company"] = metadata.get("insurance_company")
-            chunk["insurance_type"] = metadata.get("insurance_type")
-        
-        return metadata, parent_content, child_chunks
+        return metadata, text
 
 
 def extract_text_from_pdf(pdf_path: str) -> str:
@@ -181,32 +157,18 @@ def extract_text_from_pdf(pdf_path: str) -> str:
         text = ""
         doc = fitz.open(pdf_path)
         num_pages = len(doc)
-        print(f"      (Reading {num_pages} pages...)")
-        
+        logger.debug("Reading %d pages from %s", num_pages, pdf_path)
+
         for page_num in range(num_pages):
             page = doc[page_num]
-            
-            # Extract text
             extracted = page.get_text()
             if extracted:
                 text += extracted
-            
-            # Also try to extract text with different methods for CID PDFs
-            blocks = page.get_text("blocks")
-            for block in blocks:
-                if isinstance(block, dict) and "lines" in block:
-                    for line in block["lines"]:
-                        for span in line["spans"]:
-                            if "text" in span:
-                                text += span["text"] + " "
-            
-            if (page_num + 1) % 5 == 0:
-                print(f"      (Processed {page_num + 1}/{num_pages} pages...)")
-        
+
         doc.close()
         return text
     except Exception as e:
-        print(f"  Error reading PDF: {str(e)}")
+        logger.error("Failed to read PDF %s", pdf_path, exc_info=True)
         return ""
 def load_insurance_documents(data_folder: Optional[str] = None) -> Dict:
     """Load and parse all insurance documents using Groq LLM."""
@@ -218,68 +180,65 @@ def load_insurance_documents(data_folder: Optional[str] = None) -> Dict:
     parser = InsuranceDocumentParserLLM()
     results = {
         "metadata": [],
-        "parent_chunks": [],
-        "child_chunks": []
+        "parent_chunks": []
     }
 
     if not os.path.exists(data_folder):
-        print(f"Data folder not found: {data_folder}")
+        logger.warning("Data folder not found: %s", data_folder)
         return results
-    
+
     files = [f for f in os.listdir(data_folder) if f.endswith('.txt') or f.endswith('.pdf')]
-    
+
     if not files:
-        print(f"No TXT or PDF files found in {data_folder}")
+        logger.warning("No TXT or PDF files found in %s", data_folder)
         return results
-    
+
+    logger.info("Parsing %d documents from %s", len(files), data_folder)
+
     for filename in files:
         filepath = os.path.join(data_folder, filename)
-        print(f"\nParsing: {filename}")
-        
+
         try:
-            # Extract text
             if filename.endswith('.pdf'):
-                print("  PDF detected - extracting text...")
                 text = extract_text_from_pdf(filepath)
                 if not text.strip():
-                    print("  Could not extract text from PDF")
+                    logger.warning("%s: no text could be extracted from PDF", filename)
+                    results["metadata"].append(
+                        _error_record(filename, "No text could be extracted from PDF")
+                    )
                     continue
             else:
-                print("  TXT file detected - reading...")
                 with open(filepath, 'r', encoding='utf-8') as f:
                     text = f.read()
-            
-            # Parse with Groq LLM
-            print("  Analyzing with Groq...")
-            metadata, parent, children = parser.parse_document(text, filename)
-            
+
+            text = normalize_text(text)
+
+            metadata, parent = parser.parse_document(text, filename)
+
             results["metadata"].append(metadata)
-            
+
             results["parent_chunks"].append({
                 "content": parent,
                 "metadata": metadata,
                 "source_file": filename,
                 "type": "parent"
             })
-            
-            for child in children:
-                child["source_file"] = filename
-                results["child_chunks"].append(child)
-            
-            # Print results
-            print(f"  ✓ Policy #: {metadata.get('policy_number', 'N/A')}")
-            print(f"  ✓ Type: {metadata.get('insurance_type', 'N/A')}")
-            print(f"  ✓ Insurer: {metadata.get('insurance_company', 'N/A')}")
-            print(f"  ✓ Broker: {metadata.get('broker', 'N/A')}")
-            print(f"  ✓ Coverholder: {metadata.get('coverholder', 'N/A')}")
-            print(f"  ✓ Insured: {metadata.get('insured_name', 'N/A')}")
-            print(f"  ✓ Period: {metadata.get('period_from', 'N/A')} to {metadata.get('period_to', 'N/A')}")
-            print(f"  ✓ Premium: ${metadata.get('premium_amount', 'N/A')}")
-            print(f"  ✓ Sections: {len(children)}")
-            
+
+            if "error" in metadata:
+                logger.warning("%s: metadata extraction failed: %s", filename, metadata["error"])
+            else:
+                logger.info(
+                    "Extracted %s: policy=%s type=%s insurer=%s",
+                    filename,
+                    metadata.get('policy_number', 'N/A'),
+                    metadata.get('insurance_type', 'N/A'),
+                    metadata.get('insurance_company', 'N/A'),
+                )
+
         except Exception as e:
-            print(f"  Error parsing {filename}: {str(e)}")
-    
+            logger.error("Failed to parse %s", filename, exc_info=True)
+            results["metadata"].append(_error_record(filename, str(e)))
+
     return results
 
 
@@ -297,7 +256,6 @@ if __name__ == "__main__":
     
     print(f"\nPolicies Loaded: {len(results['metadata'])}")
     print(f"Parent Chunks: {len(results['parent_chunks'])}")
-    print(f"Child Chunks: {len(results['child_chunks'])}")
     
     if len(results['metadata']) > 0:
         print("\n" + "=" * 70)
