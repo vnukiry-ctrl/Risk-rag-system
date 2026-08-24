@@ -9,6 +9,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_DATA_FOLDER = os.path.join(BASE_DIR, "data")
+
+
 class InsuranceDocumentParserLLM:
     def __init__(self):
         self.client = OpenAI(
@@ -16,7 +20,6 @@ class InsuranceDocumentParserLLM:
             base_url="https://api.groq.com/openai/v1"
         )
         self.model = "openai/gpt-oss-120b"
-        #self.model = "mixtral-8x7b-32768" 
     
     def extract_metadata_with_llm(self, text: str, filename: str) -> Dict:
         """Use Groq to intelligently extract metadata from insurance document"""
@@ -205,16 +208,20 @@ def extract_text_from_pdf(pdf_path: str) -> str:
     except Exception as e:
         print(f"  Error reading PDF: {str(e)}")
         return ""
-def load_insurance_documents(data_folder: str = "./data") -> Dict:
-    """Load and parse all insurance documents using Groq LLM"""
-    
+def load_insurance_documents(data_folder: Optional[str] = None) -> Dict:
+    """Load and parse all insurance documents using Groq LLM."""
+    if data_folder is None:
+        data_folder = DEFAULT_DATA_FOLDER
+    elif not os.path.isabs(data_folder):
+        data_folder = os.path.join(BASE_DIR, data_folder)
+
     parser = InsuranceDocumentParserLLM()
     results = {
         "metadata": [],
         "parent_chunks": [],
         "child_chunks": []
     }
-    
+
     if not os.path.exists(data_folder):
         print(f"Data folder not found: {data_folder}")
         return results

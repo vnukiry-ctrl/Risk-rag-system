@@ -463,19 +463,179 @@ for page_num in range(len(doc)):
 
 ---
 
-#### Current Status: CID-Encoded PDFs Unsolved
+#### Current Status: CID-Encoded PDFs Unsolved (SKIPPED FOR NOW)
 
 **Why It's Hard on Windows:**
 - Most OCR solutions (Tesseract) require Linux-style dependencies
-- Cloud APIs (Google Vision, AWS Textract) require paid accounts
+- Cloud APIs require external accounts
 - Local solutions have heavy system requirements
+- Poppler/pdf2image dependency chain complex
 
-**Potential Future Solutions:**
-1. Cloud OCR API (Google Cloud Vision, AWS Textract)
-2. Online PDF conversion service
-3. Contact document provider for text-extractable version
-4. Use Windows-native OCR (Windows.Media.Ocr API)
+**Document(s) Affected:**
+- `25-26 Group Accident Policy 100013386.pdf` (35 pages)
+- Potentially others with embedded CID fonts
 
+**Decision:** Skip CID-encoded PDFs for now. Process 10 working documents first, solve this later.
+
+---
+
+### FUTURE SOLUTIONS FOR CID-ENCODED PDFS
+
+**To be implemented in future iterations. Options ranked by recommendation:**
+
+#### Option 1: Google Cloud Vision API ⭐ RECOMMENDED
+**Difficulty:** Easy  
+**Cost:** Free tier (1,000 requests/month)  
+**Setup Time:** 15 minutes
+
+**Pros:**
+- Excellent OCR quality
+- No system dependencies (cloud-based)
+- Free tier sufficient for our use
+- Easy Python integration
+
+**Cons:**
+- Requires Google Cloud account
+- Internet required
+- API quota limits
+
+**Implementation:**
+```bash
+pip install google-cloud-vision pdf2image
+```
+
+```python
+from google.cloud import vision
+from pdf2image import convert_from_path
+
+def extract_with_google_ocr(pdf_path: str) -> str:
+    """Extract text from PDF using Google Cloud Vision OCR"""
+    client = vision.ImageAnnotatorClient()
+    images = convert_from_path(pdf_path)
+    text = ""
+    
+    for image in images:
+        # Convert PIL image to bytes
+        import io
+        img_byte_arr = io.BytesIO()
+        image.save(img_byte_arr, format='PNG')
+        img_byte_arr.seek(0)
+        
+        # Call Vision API
+        response = client.document_text_detection(
+            image=vision.Image(content=img_byte_arr.read())
+        )
+        text += response.full_text_annotation.text
+    
+    return text
+```
+
+**Estimated Cost:** $0 (free tier) to $3-5 (all 11 PDFs at $0.60 per 1,000 requests)
+
+---
+
+#### Option 2: Online PDF Converter (Simplest) ⭐ IMMEDIATE WORKAROUND
+**Difficulty:** Manual  
+**Cost:** Free  
+**Setup Time:** 2 minutes per PDF
+
+**Best For:** Quick one-time extraction
+
+**Steps:**
+1. Go to: https://www.ilovepdf.com/pdf_to_text
+2. Upload CID-encoded PDF
+3. Download extracted text
+4. Save as `.txt` file in data/ folder
+5. System automatically processes `.txt` file
+
+**Pros:**
+- No coding
+- No dependencies
+- Instant results
+- Free
+
+**Cons:**
+- Manual process
+- Not scalable
+
+---
+
+#### Option 3: Azure Computer Vision API
+**Difficulty:** Medium  
+**Cost:** Free tier (5,000 requests/month)  
+**Setup Time:** 20 minutes
+
+**Pros:**
+- Good OCR quality
+- Free tier sufficient
+- Microsoft backing
+- Reliable
+
+**Cons:**
+- Requires Azure account
+- Slightly more complex setup
+- Internet required
+
+**Documentation:** https://learn.microsoft.com/en-us/azure/cognitive-services/computer-vision/
+
+---
+
+#### Option 4: AWS Textract
+**Difficulty:** Medium  
+**Cost:** $0.01 per page (first 100 pages free/month)  
+**Setup Time:** 20 minutes
+
+**Pros:**
+- Enterprise-grade OCR
+- Very accurate
+- AWS ecosystem integration
+
+**Cons:**
+- Paid after free tier
+- More complex setup
+- Slower response times
+
+---
+
+#### Option 5: Windows Native OCR (Windows.Media.Ocr)
+**Difficulty:** Hard  
+**Cost:** Free (built-in)  
+**Setup Time:** 30 minutes
+
+**Pros:**
+- No external dependencies
+- Free
+- Runs locally
+
+**Cons:**
+- Windows API (requires ctypes/pywin32)
+- Complex implementation
+- Lower accuracy than cloud options
+
+---
+
+### RECOMMENDATION FOR NEXT ITERATION
+
+**Short Term (Next Week):**
+- Use Option 2 (Online PDF Converter) for quick results
+- Manually extract CID PDFs
+- Add `.txt` versions to data/ folder
+
+**Medium Term (Next Sprint):**
+- Implement Option 1 (Google Cloud Vision)
+- Automate CID PDF detection
+- Integrate into extraction pipeline
+- Budget: ~$5 for all documents
+
+**Implementation Steps:**
+1. Create Google Cloud project
+2. Enable Vision API
+3. Create service account key
+4. Update `insurance_loader.py` to detect CID fonts
+5. Route CID PDFs to Google Vision
+6. Fall back to pdfplumber for normal PDFs
+
+---
 ---
 
 ### SUCCESSFULLY EXTRACTED DOCUMENTS
@@ -807,5 +967,332 @@ python debug_extract.py
 
 ---
 
+---
+
+## STEP 7: FASTAPI BACKEND
+
+**Date Completed:** August 19, 2026  
+**Status:** ✅ WORKING
+
+### What We Built
+
+REST API backend to serve insurance documents and enable RAG queries.
+
+**File:** `backend/main.py`
+
+### Endpoints Implemented
+GET / - Health check
+POST /extract - Extract metadata from all documents
+GET /documents - List all extracted documents
+GET /document/{id} - Get specific document
+GET /health - Detailed health status
+
+### Technology Stack
+
+- **Framework:** FastAPI
+- **Server:** Uvicorn
+- **LLM:** Groq (mixtral-8x7b-32768)
+- **Port:** 8000
+- **CORS:** Enabled (all origins)
+
+### Running the Backend
+
+```bash
+cd backend
+venv\Scripts\activate.bat
+python main.py
+```
+
+Server starts on: **http://localhost:8000**  
+API Docs: **http://localhost:8000/docs**
+
+### API Documentation
+
+FastAPI auto-generates interactive documentation at `/docs` endpoint.
+- Try all endpoints in browser
+- See request/response schemas
+- Test with real data
+
+### Data Models
+
+```python
+class ExtractionResult(BaseModel):
+    policy_number: Optional[str]
+    insurance_type: Optional[str]
+    insurance_company: Optional[str]
+    broker: Optional[str]
+    coverholder: Optional[str]
+    insured_name: Optional[str]
+    insured_address: Optional[str]
+    period_from: Optional[str]
+    period_to: Optional[str]
+    premium_amount: Optional[str]
+    coverage_limit: Optional[str]
+    deductible: Optional[str]
+    key_coverages: List[str]
+    exclusions: List[str]
+    notes: Optional[str]
+    source_file: str
+    extracted_date: str
+```
+
+### Known Issues
+
+- `/query` endpoint needs refinement (422 errors)
+- Vector store integration pending
+- RAG chain not fully connected yet
+
+### Next Iteration
+
+- Fix query endpoint with proper JSON validation
+- Integrate vector database for semantic search
+- Connect Groq LLM for intelligent answering
+
+---
+
+## STEP 8: STREAMLIT FRONTEND
+
+**Date Completed:** August 19, 2026  
+**Status:** ✅ RUNNING
+
+### What We Built
+
+Interactive web dashboard for insurance document analysis.
+
+**File:** `frontend/app.py`
+
+### Features Implemented
+
+**🏠 Home Page**
+- Health status indicator
+- Quick start extraction button
+- System overview and features
+- Technology stack info
+
+**📄 Documents Page**
+- List all extracted documents
+- Expandable cards for each policy
+- Displays:
+  - Policy information (number, type, company, broker)
+  - Coverage and dates
+  - Insured details
+  - Coverages and exclusions
+- Refresh button
+
+**🔍 Search Page**
+- Keyword/phrase search
+- Adjustable result count (1-10)
+- Shows top matching documents
+- Preview snippets
+
+**❓ Ask Questions Page**
+- Natural language question input
+- Adjustable context documents (1-10)
+- AI-powered answers from Groq LLM
+- Source attribution
+
+### Technology Stack
+
+- **Framework:** Streamlit
+- **HTTP Client:** Requests
+- **Port:** 8501
+- **UI:** Interactive widgets
+
+### Running the Frontend
+
+```bash
+cd frontend
+venv\Scripts\activate.bat
+streamlit run app.py
+```
+
+Dashboard available at: **http://localhost:8501**
+
+### Architecture
+Streamlit Frontend (8501)
+↓
+HTTP Requests
+↓
+FastAPI Backend (8000)
+↓
+Insurance Loader
+↓
+Groq LLM (Extraction & Answering)
+
+### Streamlit Pages
+
+1. **Home** - Overview and quick actions
+2. **Documents** - Browse extracted metadata
+3. **Search** - Find documents by keyword
+4. **Ask Questions** - Interactive Q&A with LLM
+
+### Navigation
+
+- Sidebar radio buttons for page selection
+- Back/forward browser navigation supported
+- Session state management
+
+### UI Components
+
+- Metrics display (documents loaded, API status)
+- Expandable sections with `st.expander()`
+- Text input for search and questions
+- Sliders for parameter adjustment
+- Column layouts for responsive design
+- Error/info/success message notifications
+
+### Data Flow
+User Input (Streamlit)
+↓
+HTTP Request to FastAPI
+↓
+Insurance Loader (Extract)
+↓
+Groq LLM (Process)
+↓
+JSON Response
+↓
+Display in Streamlit
+
+### Known Issues
+
+- `/query` endpoint not fully functional (422 errors)
+- Search endpoint needs vector database
+- Q&A feature pending backend fix
+
+### Future Enhancements
+
+- Document filtering by type/company
+- Advanced search with date ranges
+- Export documents to PDF/Excel
+- User preferences/bookmarks
+- Document comparison tool
+- Policy recommendation engine
+
+---
+
+## TWO-TERMINAL SETUP
+
+### Terminal 1: Backend
+
+```bash
+cd H:\my-rag-system\backend
+venv\Scripts\activate.bat
+python main.py
+```
+
+**Keep running!** Shows: `Uvicorn running on http://127.0.0.1:8000`
+
+### Terminal 2: Frontend
+
+```bash
+cd H:\my-rag-system\frontend
+venv\Scripts\activate.bat
+streamlit run app.py
+```
+
+**Keep running!** Shows: `Local URL: http://localhost:8501`
+
+### Access Points
+
+- **API:** http://localhost:8000/
+- **API Docs:** http://localhost:8000/docs
+- **Dashboard:** http://localhost:8501
+
+---
+
+## SYSTEM ARCHITECTURE
+┌─────────────────────────────────────────┐
+│ Streamlit Frontend (8501) │
+│ ┌────────────────────────────────────┐ │
+│ │ Home | Documents | Search | Q&A │ │
+│ └────────────────────────────────────┘ │
+└─────────────────────────────────────────┘
+↓ HTTP Requests
+┌─────────────────────────────────────────┐
+│ FastAPI Backend (8000) │
+│ ┌────────────────────────────────────┐ │
+│ │ /extract /documents /query │ │
+│ │ /search /health │ │
+│ └────────────────────────────────────┘ │
+└─────────────────────────────────────────┘
+↓
+┌─────────────────────────────────────────┐
+│ Insurance Loader + LLM │
+│ ┌────────────────────────────────────┐ │
+│ │ PDF Extraction (pdfplumber) │ │
+│ │ LLM Processing (Groq) │ │
+│ │ Metadata Extraction │ │
+│ └────────────────────────────────────┘ │
+└─────────────────────────────────────────┘
+
+---
+
+## DEPLOYMENT STATUS
+
+**Current:** Local development  
+**Backend:** Running on localhost:8000  
+**Frontend:** Running on localhost:8501  
+**Database:** In-memory (documents_db dict)  
+**Vector Store:** Qdrant (initialized but not integrated)  
+
+**To Deploy:**
+1. Move to cloud server
+2. Update connection strings
+3. Add authentication
+4. Configure HTTPS
+5. Set up persistent database
+6. Add logging and monitoring
+
+---
+
+## FILES IN STEPS 7-8
+
+**Backend:**
+- `backend/main.py` - FastAPI application (simplified)
+- `backend/test.py` - Test server (currently running)
+
+**Frontend:**
+- `frontend/app.py` - Streamlit dashboard
+
+**Configuration:**
+- `.env` - Environment variables (GROQ_API_KEY)
+
+---
+
+## TESTING CHECKLIST
+
+✅ Backend starts and listens on 8000  
+✅ Frontend starts and loads on 8501  
+✅ `/extract` endpoint works  
+✅ `/documents` endpoint works  
+✅ Home page displays correctly  
+✅ Documents page shows metadata  
+⚠️ `/query` endpoint needs fixing  
+⚠️ Search/Q&A features pending  
+
+---
+
+## NEXT STEPS
+
+**Immediate:**
+- [ ] Fix `/query` endpoint (JSON validation)
+- [ ] Integrate vector store for search
+- [ ] Connect RAG chain
+
+**Short Term:**
+- [ ] Add authentication
+- [ ] Implement document upload
+- [ ] Add export functionality
+- [ ] Create admin dashboard
+
+**Long Term:**
+- [ ] Deploy to cloud
+- [ ] Add persistent database
+- [ ] Scale to handle more documents
+- [ ] Fine-tune extraction for specific domains
+
+---
+
 **Last Updated:** August 19, 2026  
-**Status:** Step 6 In Progress - LLM Extraction Working, Awaiting Rate Limit Reset
+**Status:** Steps 1-8 Complete (Core Functionality Working)
