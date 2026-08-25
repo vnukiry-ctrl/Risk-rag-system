@@ -96,8 +96,12 @@ async def health_check():
     return {"status": "healthy", "documents_loaded": len(documents_db)}
 
 
-@app.post("/search")
-async def search_documents(query: str, top_k: int = 5):
+@app.post("/search/metadata")
+async def search_documents_metadata(query: str, top_k: int = 5):
+    """Keyword substring match over extracted structured fields (policy #, insurer, etc.).
+
+    Not semantic search -- for vector-based retrieval over document content, use /query.
+    """
     if not query:
         raise HTTPException(status_code=400, detail="query required")
 

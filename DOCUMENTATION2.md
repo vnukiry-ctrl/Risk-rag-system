@@ -1213,7 +1213,7 @@ streamlit run app.py
 │ FastAPI Backend (8000) │
 │ ┌────────────────────────────────────┐ │
 │ │ /extract /documents /query │ │
-│ │ /search /health │ │
+│ │ /search/metadata /health │ │
 │ └────────────────────────────────────┘ │
 └─────────────────────────────────────────┘
 ↓
@@ -1391,3 +1391,113 @@ Milestone 1 (Core Data Pipeline) had working LLM extraction from Step 6, but no 
 
 **Last Updated:** August 24, 2026  
 **Status:** Milestone 1 (Core Data Pipeline) Complete
+
+---
+---
+
+## STEP 10: MILESTONE 2 — VECTOR SEARCH FOUNDATION
+
+**Date Completed:** August 25, 2026
+**Status:** ✅ COMPLETE
+
+### What We Built
+
+Milestone 1 left the vector search pieces (embeddings, Qdrant, semantic search, parent-child retrieval) implemented but unverified against real data, running on an in-memory store, with no performance baseline and a misleadingly-named endpoint. This step closed those gaps.
+
+---
+
+#### 1. Persistent Vector Storage
+
+**Problem:** `vector_store.py` used `QdrantClient(":memory:")`. Every backend restart silently wiped the entire vector index — all 1,800+ indexed chunks gone, requiring a full re-run of `/extract` (LLM extraction + embedding) just to get back to a working state.
+
+**Fix:** Switched to Qdrant's on-disk local mode: `QdrantClient(path=QDRANT_PATH)`, where `QDRANT_PATH` defaults to `./qdrant_data` and is overridable via env var. `index_documents()` and `semantic_search()` needed no changes — same client API either way.
+
+**Migration path (documented, not yet implemented):** for deployment, swap to `QdrantClient(url=...)` pointing at a real Qdrant server/cloud instance. One-line change; everything downstream is unaffected. On-disk local mode also only supports one process at a time (file lock) — fine for a single dev backend, but a reason to make that swap before running multiple workers.
+
+**Verified:** wrote a test point with one Python process, opened a fresh process pointing at the same path, confirmed the collection was still there. `backend/qdrant_data/` added to `.gitignore` (regenerated data, not source — same treatment as the PDF data files).
+
+---
+
+#### 2. Real Index Rebuild + End-to-End Verification
+
+**Problem:** Milestone 1's testing used 3 sample documents; Milestone 2's retrieval logic had never been run against all 9 real insurance PDFs or through the actual running API.
+
+**What happened:** Found and killed a stale `uvicorn` process left running from the previous day (still on the old in-memory code) that was silently blocking port 8000. Started a fresh server on the new persistent-storage code and ran `/extract` for real.
+
+**Result:** 8 of 9 documents extracted successfully by the LLM. One (`25-26 Group Accident Policy 100013386.pdf`) failed with a Groq `413` — the document's text is too large for `openai/gpt-oss-120b`'s per-request token budget (8,000 TPM limit, document requested 9,293). This is independent of indexing: **all 9 documents' text was still chunked and embedded** — 1,810 child chunks indexed with no indexing errors.
+
+**Verified `/query` end-to-end:** asked "What is the coverage limit for the Mount Royal University Commercial General Liability policy?" — got the correct answer ($5,000,000, matching the extracted `AVP406486` policy data) with the right source document ranked first, in 3.4s.
+
+**Discovered along the way:** `documents_db` (the structured metadata dict used to build the "authoritative summary" in `/query` prompts) is in-memory only, unlike the Qdrant index. After restarting the server to pick up the `/search` rename (below), a query that previously answered correctly ("what's the deductible") degraded to "not found in the excerpts" because `documents_db` was empty — the vector index survived the restart, the metadata dict didn't. Re-running `/extract` restored correct answers. **This is a real gap**: only half of the system's state is actually persistent right now.
+
+---
+
+#### 3. Performance Smoke Test
+
+**Problem:** Milestone 1/2 checklists claimed "performance testing (latency, accuracy)" was done. It wasn't — no test script or results existed anywhere in the repo.
+
+**Fix:** Added `backend/perf_smoke_test.py` — 5 known-answer questions (one per distinct policy), run against the live `/query` endpoint. For each, checks (a) the expected policy number appears in the returned sources, and (b) records latency.
+
+**Result:** 5/5 retrieval hit rate; all spot-checked answers factually correct against the extracted data. Latency ranged 2.8s–22.9s (avg 12.6s) — **not a retrieval problem** (Qdrant search is local and fast), but Groq's free-tier rate limiting causing retries on the answer-generation call, same 429 behavior seen during `/extract`. Retrieval quality is solid; LLM answer-generation latency is the real bottleneck, and it's tied to the Groq free tier rather than anything in the vector search pipeline.
+
+**Scope note:** this is a lightweight sanity check, not the full k-tuning evaluation methodology (golden Q&A set, Recall@k/MRR, generation-quality curves across k values). That's deliberately deferred until real production-scale documents and a proper golden dataset exist — see the "top-k tuning" discussion in this milestone's planning notes.
+
+---
+
+#### 4. Fixed the `/search` Endpoint Name
+
+**Problem:** `/search` in `main.py` did plain substring matching over extracted metadata fields (`documents_db`) — not vector search. Its name made it indistinguishable from `/query` (the actual semantic search + LLM answer endpoint), which could mislead anyone integrating against the API.
+
+**Fix:** Renamed to `/search/metadata` with a docstring clarifying it's keyword search over structured fields, not semantic search — "for vector-based retrieval over document content, use `/query`." Updated the one caller (`frontend/app.py`'s Search page) and the architecture diagram in this document.
+
+**Verified:** old `/search` path now 404s; new `/search/metadata` path works identically to the old behavior.
+
+---
+
+#### 5. Removed Dead Code
+
+`backend/rag_chain.py` was an empty leftover file from an earlier build step, never imported anywhere. Deleted after confirming no references in the app code.
+
+---
+
+### Known Gaps (Not Fixed This Milestone)
+
+- **`documents_db` doesn't persist** across backend restarts (see item 2) — only the Qdrant vector index does. A restart requires re-running `/extract` to restore full `/query` answer quality.
+- **One document can't be extracted** (`25-26 Group Accident Policy 100013386.pdf`) due to Groq's per-request token limit — its content is still searchable via `/query`, just without structured metadata (policy number, premium, etc.).
+- **Top-k is still a fixed default (5)**, not tuned. Deliberately deferred: proper tuning needs a golden Q&A evaluation set built from real production documents, which don't fully exist yet (see planning discussion for the intended methodology: separate retrieval metrics from generation metrics, sweep k, account for the parent-child dedup mechanic, pick the elbow).
+- **Groq LLM answer-generation latency** is inconsistent (free-tier rate limits) — not something to fix in this codebase, but worth knowing before treating `/query` latency numbers as representative of production behavior.
+- The stubbed Anthropic embeddings option in `vector_store.py` remains unimplemented/unverified — intentionally kept for future use, not touched this milestone.
+
+---
+
+### Decision Log
+
+**Decision:** On-disk local Qdrant mode now, server/cloud mode later at deployment
+**Date:** August 25, 2026
+**Rationale:** Same client API either way — `index_documents()`/`semantic_search()` don't change. Local mode needs no extra service for development; a real Qdrant server is more appropriate once there's a deployment target and possibly multiple worker processes (local mode only supports one process at a time via its file lock).
+**Status:** ✅ APPROVED
+
+**Decision:** Rename `/search` to `/search/metadata` rather than delete it
+**Date:** August 25, 2026
+**Rationale:** The keyword/metadata search is a legitimately different, still-useful capability (e.g. "find policies from Aviva") — the problem was only the misleading name next to `/query`, which does the real semantic search.
+**Status:** ✅ APPROVED
+
+**Decision:** Defer full top-k tuning until real documents + a golden eval set exist
+**Date:** August 25, 2026
+**Rationale:** Rigorous k-tuning requires ground-truth Q&A pairs across representative document types; the current 9-document set is a starting point, not the production corpus. Tuning now would optimize for the wrong distribution.
+**Status:** ✅ APPROVED (deferred, not skipped)
+
+---
+
+### Files Changed
+- `backend/vector_store.py` — persistent on-disk Qdrant client (`QdrantClient(path=...)` instead of `:memory:`)
+- `backend/main.py` — `/search` renamed to `/search/metadata` with clarifying docstring
+- `frontend/app.py` — updated to call `/search/metadata`
+- `backend/perf_smoke_test.py` — new, latency + retrieval-accuracy smoke test
+- `backend/rag_chain.py` — deleted (dead file)
+- `.gitignore` — added `backend/qdrant_data/`
+
+---
+
+**Last Updated:** August 25, 2026
+**Status:** Milestone 2 (Vector Search Foundation) Complete

@@ -28,7 +28,7 @@ Ingests insurance policy PDFs, extracts structured metadata (policy number, insu
 | Backend API | FastAPI |
 | Frontend UI | Streamlit |
 | Document Processing | LangChain text splitters |
-| Vector Storage | Qdrant (in-memory) |
+| Vector Storage | Qdrant (persistent, on-disk local mode) |
 | Embeddings | Ollama (`nomic-embed-text`), swappable to Anthropic |
 | LLM | Groq (`openai/gpt-oss-120b`), swappable to Anthropic |
 
@@ -60,12 +60,14 @@ pip install streamlit requests
 - [x] Error handling for problematic PDFs
 - [x] Logging & monitoring
 
-### Milestone 2: Vector Search Foundation — mostly done
+### Milestone 2: Vector Search Foundation — ✅ Complete
 - [x] Embeddings generation (Ollama, swappable)
-- [x] Vector store integration (Qdrant)
-- [x] Semantic search endpoint
-- [x] Top-K retrieval
-- [ ] Persistence (currently in-memory only) & performance testing
+- [x] Vector store integration (Qdrant, persistent on-disk)
+- [x] Semantic search endpoint (verified end-to-end against real documents)
+- [x] Top-K retrieval (fixed default; full tuning deferred until a production-scale golden eval set exists)
+- [x] Performance testing (retrieval smoke test — 5/5 hit rate; see `backend/perf_smoke_test.py`)
+
+Known gaps carried forward: one oversized PDF fails LLM metadata extraction (Groq per-request token limit); extracted document metadata (`documents_db`) is in-memory only and must be rebuilt via `/extract` after each backend restart — see `DOCUMENTATION2.md` Step 10 for details.
 
 ### Milestone 3: RAG Chain Implementation — functional, basic
 - [x] LLM integration (Groq, swappable)

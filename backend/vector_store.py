@@ -67,11 +67,19 @@ COLLECTION_NAME = "insurance_documents"
 _client = None
 
 
+QDRANT_PATH = os.getenv("QDRANT_PATH", "./qdrant_data")
+
+
 def get_client() -> QdrantClient:
-    """Return the process-wide in-memory Qdrant client, creating it on first use."""
+    """Return the process-wide Qdrant client, creating it on first use.
+
+    Uses on-disk local mode so the index survives restarts. For deployment,
+    swap this for QdrantClient(url=...) pointing at a real Qdrant server —
+    index_documents()/semantic_search() don't need to change.
+    """
     global _client
     if _client is None:
-        _client = QdrantClient(":memory:")
+        _client = QdrantClient(path=QDRANT_PATH)
     return _client
 
 

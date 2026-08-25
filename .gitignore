@@ -3,6 +3,9 @@ backend/data/*.pdf
 backend/data/*.txt
 backend/data/*.docx
 
+# Vector store (regenerated via /extract)
+backend/qdrant_data/
+
 # Environment
 .env
 .env.local

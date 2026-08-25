@@ -114,7 +114,7 @@ elif page == "🔍 Search":
         with st.spinner("Searching..."):
             try:
                 response = requests.post(
-                    f"{API_BASE_URL}/search",
+                    f"{API_BASE_URL}/search/metadata",
                     params={"query": search_query, "top_k": top_k}
                 )
                 if response.status_code == 200:
