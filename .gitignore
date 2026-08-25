@@ -6,6 +6,10 @@ backend/data/*.docx
 # Vector store (regenerated via /extract)
 backend/qdrant_data/
 
+# Runtime-generated logs (feedback, experiment results) -- not source
+backend/feedback_log.jsonl
+backend/experiments_log.jsonl
+
 # Environment
 .env
 .env.local

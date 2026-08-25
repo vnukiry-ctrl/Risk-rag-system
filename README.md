@@ -39,7 +39,7 @@ Ingests insurance policy PDFs, extracts structured metadata (policy number, insu
 cd backend
 python -m venv venv
 venv\Scripts\activate
-pip install fastapi uvicorn python-dotenv pypdf PyMuPDF qdrant-client langchain-text-splitters requests openai
+pip install fastapi uvicorn python-dotenv pypdf PyMuPDF qdrant-client langchain-text-splitters requests openai pytest
 ```
 Also requires [Ollama](https://ollama.com) running locally with the `nomic-embed-text` model pulled (`ollama pull nomic-embed-text`), and a `GROQ_API_KEY` in `backend/.env`.
 
@@ -51,9 +51,49 @@ venv\Scripts\activate
 pip install streamlit requests
 ```
 
+## Testing & Benchmarking
+
+Quality-evaluation suite (Milestone 4), run against the live API:
+```bash
+cd backend
+venv\Scripts\activate
+uvicorn main:app --reload   # in one terminal
+pytest tests/ -v -s         # in another
+```
+Retrieval hit rate/MRR/precision@k, structured-fact answer correctness, and
+latency percentiles are all scored against `tests/golden_set.py` — a small,
+hand-verified set of question -> known-correct-fact pairs (see that file's
+docstring for what "golden set" means at this scale and why the numbers
+aren't yet statistically trustworthy). Two cases are marked `xfail` for
+known, understood bugs (see Milestone 3 known gaps below) rather than
+skipped, so the suite still surfaces the moment either one gets fixed.
+
+**What "good" looks like for each metric:**
+
+| Metric | Ideal (good) | Not good |
+|---|---|---|
+| Hit Rate@k | ≥ 90% (small curated set) | < 70% |
+| MRR | ≥ 0.8 (near 1.0 = correct chunk always ranks first) | < 0.5 |
+| Precision@k | ~1.0 *only* on entity-scoped questions (ADR-0004); 0.2–0.5 is normal/expected on unscoped ones | a drop specifically on a scoped question |
+| Answer correctness (structured facts) | 100% — no partial credit on a dollar figure or policy number | any miss at all |
+| Latency p50 / p95 | aspirational UX target: < 3s / < 6s | this system's measured real floor: < 18s / < 28s (Groq round-trip dominates; see `test_latency_percentiles`) |
+
+Every number above is either a general UX/IR convention (latency, hit rate,
+MRR) or was pulled from this project's own measured runs (precision's
+scoped/unscoped split, the latency floor) — not guessed and left unchecked.
+See `backend/tests/test_quality.py` for where each one is scored, and the
+top-k experiment (`backend/tests/topk_experiment.py` /
+`backend/tests/topk_results.json`) for how precision and latency actually
+move as `top_k` changes.
+
+Indexing/embedding throughput benchmark (separate from query-time
+performance): `python backend/benchmark_indexing.py` — **stop the backend
+first** (Qdrant's on-disk mode locks its storage folder to one process at a
+time) and see the script's docstring for what it measures and why.
+
 ## Project Status
 
-_Last updated: 2026-08-25 (Milestone 2 complete — see `DOCUMENTATION2.md` Step 10)_
+_Last updated: 2026-08-25 (Milestone 4 in progress — evaluation suite, benchmark script, and two real bugs it found)_
 
 The roadmap below separates the **build phases** (the actual pipeline/system work, done in sequence) from **documentation** and **continuous improvement**, which aren't phases with an end state — they run alongside the build phases on an ongoing basis rather than being "reached" in turn.
 
@@ -64,7 +104,7 @@ The roadmap below separates the **build phases** (the actual pipeline/system wor
 | 1 | Core Data Pipeline | ✅ Complete |
 | 2 | Vector Search Foundation | ✅ Complete |
 | 3 | RAG Chain Implementation | 🟡 Functional, basic |
-| 4 | Quality & Evaluation | ⬜ Not started |
+| 4 | Quality & Evaluation | 🟡 In progress |
 | 5 | Advanced Features | ⬜ Not started |
 | 6 | Production Deployment | ⬜ Not started |
 | 7 | Monitoring & Ops | ⬜ Not started |
@@ -95,12 +135,16 @@ The roadmap below separates the **build phases** (the actual pipeline/system wor
 - [x] Source attribution
 - [ ] Response quality tuning / evaluation
 
-#### Milestone 4: Quality & Evaluation — ⬜ Not started
-- [ ] Evaluation metrics (relevance, accuracy, latency)
-- [ ] Automated test suite
-- [ ] A/B testing framework
-- [ ] User feedback loop
-- [ ] Performance benchmarks
+**Known gaps carried forward (found by Milestone 4's eval suite):**
+- Entity-scoped filtering (`find_relevant_source_files`, `main.py`, ADR-0004) matches on insured-name substrings, which breaks when one insured has multiple policies — "Mount Royal University Commercial General Liability policy" wrongly scopes to a different Mount Royal policy (BW240599). See `backend/tests/golden_set.py`.
+- The oversized-PDF document (`25-26 Group Accident Policy 100013386.pdf`, already noted as a metadata-extraction failure in Milestone 2) doesn't surface in top-5 semantic search for an on-topic question about its own content, and the LLM hallucinates a confident wrong attribution instead of stating it doesn't know. Worse than previously documented — tracked as `xfail` in the same test file.
+
+#### Milestone 4: Quality & Evaluation — 🟡 In progress
+- [x] Evaluation metrics (relevance, accuracy, latency) — `backend/tests/test_quality.py`: hit rate, MRR, precision@k, structured-fact answer correctness, latency percentiles
+- [x] Automated test suite — `pytest backend/tests/`, replacing `perf_smoke_test.py`'s manual print-and-eyeball pattern with real assertions
+- [ ] A/B testing framework — mechanism built (`backend/experiments.py`, `variant` field on `/query`), **not yet verified end-to-end** and not activated; see ADR-0007 for the open verification item and ADR-0006 for why real comparisons stay deferred
+- [x] User feedback loop — `POST /feedback` (`backend/feedback_store.py`), durable JSONL log, verified working
+- [x] Performance benchmarks — `backend/benchmark_indexing.py` (indexing/embedding throughput, separate from query-time latency)
 
 Deliverable: quality dashboard with KPIs.
 

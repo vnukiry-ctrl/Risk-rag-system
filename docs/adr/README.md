@@ -34,3 +34,5 @@ What this makes easier, what it makes harder, and what would need to be true to 
 | [0003](0003-general-purpose-embedding-model.md) | Ollama `nomic-embed-text`, general-purpose embeddings | Accepted (provisional) |
 | [0004](0004-entity-scoped-retrieval-filtering.md) | Filter retrieval to named policy/insurer when the question names one | Accepted |
 | [0005](0005-defer-top-k-and-context-budget-tuning.md) | Defer top-k and context-budget tuning | Deferred |
+| [0006](0006-defer-ab-testing-framework.md) | Defer A/B testing framework | Deferred |
+| [0007](0007-ab-mechanism-built-not-activated.md) | A/B testing mechanism built, not activated | Accepted (mechanism only) |

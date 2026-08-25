@@ -1,0 +1,7 @@
+{
+  "1": {"hit_rate": 1.00, "mrr": 1.00, "precision": 1.00, "avg_latency": 2.8},
+  "2": {"hit_rate": 1.00, "mrr": 1.00, "precision": 0.90, "avg_latency": 6.0},
+  "3": {"hit_rate": 1.00, "mrr": 1.00, "precision": 0.80, "avg_latency": 12.6},
+  "5": {"hit_rate": 1.00, "mrr": 1.00, "precision": 0.74, "avg_latency": 10.5},
+  "10": {"error": "Groq daily token quota (200,000 TPD) exhausted from cumulative testing this session -- 429 rate_limit_exceeded, not a RAG failure. Retry after quota reset."}
+}

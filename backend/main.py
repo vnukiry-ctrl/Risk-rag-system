@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -7,6 +8,8 @@ from typing import List, Optional
 from insurance_loader import load_insurance_documents
 from vector_store import index_documents, semantic_search
 from llm_client import llm_complete
+from feedback_store import record_feedback
+from experiments import get_variant, log_experiment_result
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -42,6 +45,20 @@ class QueryRequest(BaseModel):
     # question -> correct-answer pairs) for whatever documents the new
     # project actually has, rather than reusing this number.
     top_k: int = 5
+    # DECISION (UNIVERSAL, mechanism built ahead of use -- see ADR-0006/0007):
+    # None preserves today's exact behavior (top_k above, temperature=0
+    # below). Naming a variant from experiments.VARIANTS overrides both for
+    # this request only, so A/B comparisons are opt-in per call, not a
+    # global toggle -- see experiments.py for why this isn't "live" yet.
+    variant: Optional[str] = None
+
+
+class FeedbackRequest(BaseModel):
+    question: str
+    answer: str
+    rating: str  # "up" or "down" -- no third option; forcing a choice is what makes this actionable
+    comment: Optional[str] = None
+    sources: Optional[List[dict]] = None
 
 
 def find_relevant_source_files(question: str) -> Optional[List[str]]:
@@ -175,13 +192,21 @@ async def query_documents(request: QueryRequest):
     if not request.question:
         raise HTTPException(status_code=400, detail="question required")
 
-    logger.info("Query received: %r (top_k=%d)", request.question, request.top_k)
+    variant_config = get_variant(request.variant)
+    effective_top_k = variant_config["top_k"] if variant_config else request.top_k
+    effective_temperature = variant_config["temperature"] if variant_config else 0
+
+    logger.info(
+        "Query received: %r (top_k=%d, variant=%s)",
+        request.question, effective_top_k, request.variant,
+    )
+    start_time = time.time()
 
     try:
         source_files = find_relevant_source_files(request.question)
         if source_files:
             logger.info("Scoping search to %d matched document(s): %s", len(source_files), source_files)
-        chunks = semantic_search(request.question, top_k=request.top_k, source_files=source_files)
+        chunks = semantic_search(request.question, top_k=effective_top_k, source_files=source_files)
 
         # DECISION (UNIVERSAL, currently unresolved -- not yet a decision):
         # context below is built by concatenating every retrieved chunk with
@@ -242,7 +267,9 @@ async def query_documents(request: QueryRequest):
             # chosen because this task is literal fact retrieval (policy
             # numbers, limits, dates) where answer consistency matters more
             # than variety. A generation/brainstorming task would want higher.
-            temperature=0,
+            # Overridable per-request via `variant` (experiments.py) -- 0
+            # remains the default the moment no variant is named.
+            temperature=effective_temperature,
             # DECISION (UNIVERSAL): 500 is untested against this project's
             # longest realistic answer (e.g. a multi-policy comparison) --
             # verify against real usage rather than assuming it's enough.
@@ -253,6 +280,15 @@ async def query_documents(request: QueryRequest):
 
         logger.info("Query answered using %d chunks", len(chunks))
 
+        log_experiment_result(
+            variant=request.variant,
+            question=request.question,
+            top_k=effective_top_k,
+            temperature=effective_temperature,
+            sources=sources,
+            latency=time.time() - start_time,
+        )
+
         return {
             "question": request.question,
             "answer": answer,
@@ -262,6 +298,24 @@ async def query_documents(request: QueryRequest):
     except Exception as e:
         logger.exception("Query failed")
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/feedback")
+async def submit_feedback(request: FeedbackRequest):
+    """Record a thumbs up/down (plus optional comment) on a previously
+    returned answer -- see feedback_store.py for why this is a durable file,
+    not in-memory state like documents_db."""
+    if request.rating not in ("up", "down"):
+        raise HTTPException(status_code=400, detail="rating must be 'up' or 'down'")
+
+    entry = record_feedback(
+        question=request.question,
+        answer=request.answer,
+        rating=request.rating,
+        comment=request.comment,
+        sources=request.sources,
+    )
+    return {"status": "recorded", "entry": entry}
 
 
 if __name__ == "__main__":
