@@ -37,7 +37,45 @@ documents_db = {}
 
 class QueryRequest(BaseModel):
     question: str
+    # DECISION (UNIVERSAL): 5 is an untuned default carried over from Milestone
+    # 2, not a measured value -- tune it against a golden eval set (known
+    # question -> correct-answer pairs) for whatever documents the new
+    # project actually has, rather than reusing this number.
     top_k: int = 5
+
+
+def find_relevant_source_files(question: str) -> Optional[List[str]]:
+    """Scope retrieval to specific documents when the question names them.
+
+    Matches the question text against known policy numbers, insured names,
+    and insurers (substring, case-insensitive). Length-gated to avoid short
+    values matching incidentally. Returns None -- meaning search unscoped --
+    when nothing matches, so a generic question still searches everything.
+    """
+    q = question.lower()
+    matches = set()
+    for doc in documents_db.values():
+        if "error" in doc:
+            continue
+        source_file = doc.get("source_file")
+        if not source_file:
+            continue
+
+        policy_number = doc.get("policy_number")
+        if policy_number and len(policy_number) >= 4 and policy_number.lower() in q:
+            matches.add(source_file)
+            continue
+
+        insured_name = doc.get("insured_name")
+        if insured_name and len(insured_name) >= 6 and insured_name.lower() in q:
+            matches.add(source_file)
+            continue
+
+        insurance_company = doc.get("insurance_company")
+        if insurance_company and len(insurance_company) >= 6 and insurance_company.lower() in q:
+            matches.add(source_file)
+
+    return sorted(matches) if matches else None
 
 
 @app.get("/")
@@ -140,8 +178,17 @@ async def query_documents(request: QueryRequest):
     logger.info("Query received: %r (top_k=%d)", request.question, request.top_k)
 
     try:
-        chunks = semantic_search(request.question, top_k=request.top_k)
+        source_files = find_relevant_source_files(request.question)
+        if source_files:
+            logger.info("Scoping search to %d matched document(s): %s", len(source_files), source_files)
+        chunks = semantic_search(request.question, top_k=request.top_k, source_files=source_files)
 
+        # DECISION (UNIVERSAL, currently unresolved -- not yet a decision):
+        # context below is built by concatenating every retrieved chunk with
+        # no token budget or truncation. Safe today only because top_k
+        # defaults small and chunks are capped in size; a new project with
+        # larger chunks or higher top_k needs an explicit truncation/budget
+        # step here before reusing this pattern.
         if chunks:
             # Structured fields (policy #, limits, dates) are extracted once per whole
             # document and are more reliable for simple facts than a handful of raw
@@ -184,10 +231,21 @@ async def query_documents(request: QueryRequest):
 
         answer = llm_complete(
             messages=[
+                # DECISION (DOMAIN-SPECIFIC): system prompt's persona and
+                # grounding instruction are insurance wording -- rewrite for
+                # a new domain, but keep the shape: role + "state clearly
+                # when info isn't in the excerpts" is what curbs hallucination.
                 {"role": "system", "content": "You are an expert insurance policy analyst. Answer questions about insurance documents accurately and helpfully. If information is not in the provided excerpts, clearly state that."},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.7,
+            # DECISION (UNIVERSAL, but the value is domain-dependent): 0 was
+            # chosen because this task is literal fact retrieval (policy
+            # numbers, limits, dates) where answer consistency matters more
+            # than variety. A generation/brainstorming task would want higher.
+            temperature=0,
+            # DECISION (UNIVERSAL): 500 is untested against this project's
+            # longest realistic answer (e.g. a multi-policy comparison) --
+            # verify against real usage rather than assuming it's enough.
             max_tokens=500,
         )
 

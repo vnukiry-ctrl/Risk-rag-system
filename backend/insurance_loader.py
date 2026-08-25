@@ -36,6 +36,11 @@ def normalize_text(text: str) -> str:
     in place, that noise eats into the 8000-char sample sent to the LLM and
     dilutes the chunks used for embedding search.
     """
+    # PyMuPDF emits U+FFFD for glyphs it can't map (seen with custom/subset
+    # fonts encoding smart quotes and dashes) -- drop rather than keep, since
+    # a missing apostrophe ("Lloyds Underwriters") reads better than a
+    # visible replacement-character glitch in extracted metadata and answers.
+    text = text.replace("�", "")
     lines = [line.strip() for line in text.split("\n")]
     text = "\n".join(lines)
     text = _MULTI_BLANK_RE.sub("\n\n", text)
@@ -47,8 +52,18 @@ class InsuranceDocumentParserLLM:
     def extract_metadata_with_llm(self, text: str, filename: str) -> Dict:
         """Use Groq to intelligently extract metadata from insurance document"""
         
+        # DECISION (UNIVERSAL, value needs re-checking per project): hard
+        # truncation before the fields-of-interest are guaranteed to appear.
+        # A doc whose key fields sit past char 8000 (long riders/addenda)
+        # silently loses them here -- verify against your actual document
+        # lengths rather than reusing 8000.
         text_sample = text[:8000]
-        
+
+        # DECISION (DOMAIN-SPECIFIC): entire prompt below -- field list,
+        # few-shot hints (policy-number formats, insurer/broker phrasing) --
+        # is insurance vocabulary. Rewrite completely for a new domain; the
+        # pattern worth keeping is "explicit field list + null-if-missing +
+        # return-only-JSON", not the specific fields or hints.
         prompt = f"""You are an insurance document expert. Extract ONLY valid JSON from this insurance document. Return the JSON object only, no other text.
 
 DOCUMENT FILENAME: {filename}

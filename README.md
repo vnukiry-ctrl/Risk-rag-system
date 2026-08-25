@@ -95,8 +95,50 @@ The roadmap below separates the **build phases** (the actual pipeline/system wor
 - [x] Source attribution
 - [ ] Response quality tuning / evaluation
 
-#### Milestones 4–8 — ⬜ Not started
-Quality & evaluation, advanced features, production deployment, monitoring/ops, and security & compliance have not been started.
+#### Milestone 4: Quality & Evaluation — ⬜ Not started
+- [ ] Evaluation metrics (relevance, accuracy, latency)
+- [ ] Automated test suite
+- [ ] A/B testing framework
+- [ ] User feedback loop
+- [ ] Performance benchmarks
+
+Deliverable: quality dashboard with KPIs.
+
+#### Milestone 5: Advanced Features — ⬜ Not started
+- [ ] Multi-format support (PDFs, DOCX, images)
+- [ ] Chat history & context carryover
+- [ ] Query rewriting (multi-hop questions)
+- [ ] Hallucination detection
+- [ ] Confidence scoring
+
+Deliverable: feature-rich RAG system.
+
+#### Milestone 6: Production Deployment — ⬜ Not started
+- [ ] API hardening (rate limiting, auth)
+- [ ] Database persistence (PostgreSQL)
+- [ ] Caching layer (Redis)
+- [ ] Load testing & scaling
+- [ ] Docker containerization
+
+Deliverable: production-ready deployment.
+
+#### Milestone 7: Monitoring & Ops — ⬜ Not started
+- [ ] Logging (structured logs)
+- [ ] Monitoring (Prometheus/Grafana)
+- [ ] Alerting (failures, latency)
+- [ ] Analytics (usage, costs)
+- [ ] Auto-recovery
+
+Deliverable: 24/7 monitoring dashboard.
+
+#### Milestone 8: Security & Compliance — ⬜ Not started
+- [ ] User authentication (OAuth2/JWT)
+- [ ] Authorization (role-based access)
+- [ ] Data encryption (in transit, at rest)
+- [ ] Audit logging
+- [ ] GDPR/compliance
+
+Deliverable: security audit passed.
 
 ### Ongoing (not build phases)
 

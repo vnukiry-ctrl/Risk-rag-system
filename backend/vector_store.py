@@ -1,6 +1,6 @@
 import logging
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct
+from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchAny
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 import os
 import requests
@@ -18,6 +18,12 @@ logger = logging.getLogger(__name__)
 # /api/embed endpoint. LangChain's OllamaEmbeddings.embed_documents()
 # sends one HTTP request per text (~2s each); batching cuts that ~15x.
 
+# DECISION (UNIVERSAL, but re-evaluate every time): embedding model choice
+# is the single biggest lever on retrieval quality in this whole pipeline --
+# bigger than chunk size or top_k. nomic-embed-text is general-purpose and
+# has no notion of domain concepts (e.g. "coverage limit" vs "premium"); a
+# domain-tuned or larger model is the first thing to try if retrieval
+# quality is the bottleneck on a new project, before touching chunk sizes.
 EMBEDDINGS_PROVIDER = "ollama"  # Options: "ollama" or "anthropic"
 OLLAMA_BASE_URL = "http://localhost:11434"
 OLLAMA_EMBED_MODEL = "nomic-embed-text"
@@ -88,6 +94,10 @@ def setup_vector_store():
     return get_client(), embeddings
 
 
+# DECISION (UNIVERSAL): parent/child sizes are tuned to how big a coherent
+# unit of meaning is in *this* document type (a policy clause), not a fixed
+# rule. Re-derive for a new project from its own documents -- code comments,
+# support tickets, and contracts all have different natural unit sizes.
 def index_documents(
     parent_chunks: List[Dict],
     parent_chunk_size: int = 2000,
@@ -110,6 +120,8 @@ def index_documents(
     Returns the number of child chunks indexed.
     """
     client = get_client()
+    # DECISION (UNIVERSAL): cosine is the standard default for normalized
+    # text embeddings and is rarely worth revisiting -- leave as-is.
     client.recreate_collection(
         collection_name=COLLECTION_NAME,
         vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
@@ -167,21 +179,32 @@ def index_documents(
     return len(points)
 
 
-def semantic_search(query: str, top_k: int = 5) -> List[Dict]:
+def semantic_search(query: str, top_k: int = 5, source_files: List[str] = None) -> List[Dict]:
     """Embed the query, match against child chunks, and return each match's parent text.
 
     Matching happens on the small child chunks (precise embeddings), but the
     text returned is the larger parent chunk each match belongs to, so callers
     get the surrounding passage rather than an isolated fragment.
+
+    source_files, when given, restricts the search to those documents --
+    child chunks embed generic insurance vocabulary ("coverage limit",
+    "deductible"), so an unscoped search for a question naming one policy
+    can still pull in similarly-worded chunks from unrelated policies.
     """
     client = get_client()
     if COLLECTION_NAME not in [c.name for c in client.get_collections().collections]:
         return []
 
     query_vector = embeddings.embed_query(query)
+    query_filter = None
+    if source_files:
+        query_filter = Filter(
+            must=[FieldCondition(key="source_file", match=MatchAny(any=source_files))]
+        )
     results = client.query_points(
         collection_name=COLLECTION_NAME,
         query=query_vector,
+        query_filter=query_filter,
         limit=top_k,
     ).points
 
