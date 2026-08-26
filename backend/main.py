@@ -1,14 +1,18 @@
 import logging
 import os
 import time
+import uuid
+from collections import deque
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 from typing import List, Optional
 from insurance_loader import load_insurance_documents
 from vector_store import index_documents, semantic_search
 from llm_client import llm_complete
 from feedback_store import record_feedback
+from documents_store import save_documents, load_documents
 from experiments import get_variant, log_experiment_result
 from dotenv import load_dotenv
 
@@ -35,7 +39,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-documents_db = {}
+documents_db = load_documents()
+
+# DECISION (UNIVERSAL, Milestone 5.2 -- history only, no query condensation
+# yet): in-memory dict keyed by session_id, deque(maxlen=...) caps stored
+# turns per session. Same durability tradeoff already made for documents_db
+# -- lost on restart, which is fine for a conversation but wouldn't be for
+# feedback_store.py's data. History is the raw (question, answer) text only,
+# not the retrieved context, so replaying it into the prompt stays cheap
+# regardless of how large top_k's chunks are.
+MAX_HISTORY_TURNS = 5
+sessions_db = {}
 
 
 class QueryRequest(BaseModel):
@@ -51,6 +65,12 @@ class QueryRequest(BaseModel):
     # this request only, so A/B comparisons are opt-in per call, not a
     # global toggle -- see experiments.py for why this isn't "live" yet.
     variant: Optional[str] = None
+    # DECISION (UNIVERSAL, Milestone 5.2): omit on the first call of a
+    # conversation -- the server mints one and returns it. Pass it back on
+    # every follow-up to carry that conversation's history forward. An
+    # unrecognized id (expired process restart, typo) is treated as the
+    # start of a new session rather than an error -- see sessions_db above.
+    session_id: Optional[str] = None
 
 
 class FeedbackRequest(BaseModel):
@@ -102,9 +122,17 @@ async def root():
 
 @app.post("/extract")
 async def extract_documents():
+    # DECISION (UNIVERSAL): load_insurance_documents() is fully synchronous,
+    # blocking I/O (disk reads, LLM calls per document). Calling it directly
+    # inside this async def would block FastAPI's single-threaded event loop
+    # for the entire request -- not just this one, every other in-flight
+    # request (including /health and /query) queues behind it with no
+    # response until it returns. run_in_threadpool offloads it to a worker
+    # thread so the event loop stays free to serve everything else while
+    # this runs. Same reasoning applies to index_documents() below.
     logger.info("Extraction requested")
     try:
-        results = load_insurance_documents()
+        results = await run_in_threadpool(load_insurance_documents)
     except Exception as e:
         logger.exception("Document loading failed")
         raise HTTPException(status_code=500, detail=f"Document loading failed: {str(e)}")
@@ -115,6 +143,7 @@ async def extract_documents():
         doc_id = meta.get("policy_number") or meta.get("source_file", "unknown")
         documents_db[doc_id] = meta
         (failed if "error" in meta else successful).append(meta)
+    save_documents(documents_db)
 
     # Indexing calls an external embedding service (Ollama) and can fail
     # independently of extraction; don't let that discard the extraction
@@ -122,7 +151,7 @@ async def extract_documents():
     chunks_indexed = 0
     indexing_error = None
     try:
-        chunks_indexed = index_documents(results["parent_chunks"])
+        chunks_indexed = await run_in_threadpool(index_documents, results["parent_chunks"])
     except Exception as e:
         logger.exception("Indexing failed")
         indexing_error = str(e)
@@ -196,9 +225,12 @@ async def query_documents(request: QueryRequest):
     effective_top_k = variant_config["top_k"] if variant_config else request.top_k
     effective_temperature = variant_config["temperature"] if variant_config else 0
 
+    session_id = request.session_id or str(uuid.uuid4())
+    history = sessions_db.get(session_id, deque(maxlen=MAX_HISTORY_TURNS))
+
     logger.info(
-        "Query received: %r (top_k=%d, variant=%s)",
-        request.question, effective_top_k, request.variant,
+        "Query received: %r (top_k=%d, variant=%s, session=%s, history_turns=%d)",
+        request.question, effective_top_k, request.variant, session_id, len(history),
     )
     start_time = time.time()
 
@@ -206,7 +238,13 @@ async def query_documents(request: QueryRequest):
         source_files = find_relevant_source_files(request.question)
         if source_files:
             logger.info("Scoping search to %d matched document(s): %s", len(source_files), source_files)
-        chunks = semantic_search(request.question, top_k=effective_top_k, source_files=source_files)
+        # Same run_in_threadpool reasoning as /extract above: semantic_search
+        # (Qdrant + embedding call) and llm_complete (Groq call) below are
+        # both blocking network I/O -- without offloading them, one slow
+        # query freezes the whole server for every other concurrent request.
+        chunks = await run_in_threadpool(
+            semantic_search, request.question, top_k=effective_top_k, source_files=source_files
+        )
 
         # DECISION (UNIVERSAL, currently unresolved -- not yet a decision):
         # context below is built by concatenating every retrieved chunk with
@@ -254,13 +292,27 @@ async def query_documents(request: QueryRequest):
 
         prompt = f"{context}\n\nUser Question: {request.question}\n\nProvide a clear, accurate answer using the summary and excerpts above. Prefer the structured policy summary for simple facts like limits, premiums, and dates. If the answer is not covered, say so."
 
-        answer = llm_complete(
+        # DECISION (UNIVERSAL, Milestone 5.2): prior turns are replayed as
+        # real user/assistant messages, not flattened into the prompt string
+        # -- this is "full history in prompt" from the 5.2 options table,
+        # scoped to raw Q&A text only (no re-attached context per turn).
+        # It does NOT fix retrieval for follow-ups like "what about its
+        # deductible" -- semantic_search above only ever sees the current
+        # question. That's query condensation (5.3), deliberately deferred.
+        history_messages = []
+        for turn in history:
+            history_messages.append({"role": "user", "content": turn["question"]})
+            history_messages.append({"role": "assistant", "content": turn["answer"]})
+
+        answer = await run_in_threadpool(
+            llm_complete,
             messages=[
                 # DECISION (DOMAIN-SPECIFIC): system prompt's persona and
                 # grounding instruction are insurance wording -- rewrite for
                 # a new domain, but keep the shape: role + "state clearly
                 # when info isn't in the excerpts" is what curbs hallucination.
                 {"role": "system", "content": "You are an expert insurance policy analyst. Answer questions about insurance documents accurately and helpfully. If information is not in the provided excerpts, clearly state that."},
+                *history_messages,
                 {"role": "user", "content": prompt}
             ],
             # DECISION (UNIVERSAL, but the value is domain-dependent): 0 was
@@ -278,6 +330,9 @@ async def query_documents(request: QueryRequest):
 
         sources = [{"source_file": c["source_file"], "policy_number": c.get("policy_number"), "score": c["score"]} for c in chunks]
 
+        history.append({"question": request.question, "answer": answer})
+        sessions_db[session_id] = history
+
         logger.info("Query answered using %d chunks", len(chunks))
 
         log_experiment_result(
@@ -293,7 +348,8 @@ async def query_documents(request: QueryRequest):
             "question": request.question,
             "answer": answer,
             "sources": sources,
-            "chunks_searched": len(chunks)
+            "chunks_searched": len(chunks),
+            "session_id": session_id
         }
     except Exception as e:
         logger.exception("Query failed")
