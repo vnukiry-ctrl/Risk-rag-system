@@ -168,7 +168,7 @@ def extract_text_from_pdf(pdf_path: str) -> str:
     """Extract text from PDF using PyMuPDF (better CID font handling)"""
     try:
         import fitz
-        
+
         text = ""
         doc = fitz.open(pdf_path)
         num_pages = len(doc)
@@ -185,6 +185,78 @@ def extract_text_from_pdf(pdf_path: str) -> str:
     except Exception as e:
         logger.error("Failed to read PDF %s", pdf_path, exc_info=True)
         return ""
+
+
+def extract_text_from_docx(docx_path: str) -> str:
+    """Extract text from a DOCX file (python-docx) -- paragraphs only.
+
+    DECISION (matches 5.1's ladder in docs/learning-guide.md): tables and
+    embedded objects aren't walked here. DOCX is structured XML, so unlike
+    the PDF path this can be extended precisely (python-docx exposes
+    doc.tables) the moment a real document needs it -- no guessing required,
+    just not built until a document actually has table content worth the
+    coverage.
+    """
+    try:
+        from docx import Document
+
+        doc = Document(docx_path)
+        paragraphs = [p.text for p in doc.paragraphs if p.text]
+        return "\n".join(paragraphs)
+    except Exception as e:
+        logger.error("Failed to read DOCX %s", docx_path, exc_info=True)
+        return ""
+
+
+def extract_text_from_image(image_path: str) -> str:
+    """Extract text from a scanned image/photo via Tesseract OCR.
+
+    DECISION (docs/learning-guide.md 5.1): this is the actual "no text layer
+    at all" case the OCR row exists for -- a standalone image has nothing
+    else to fall back to, unlike a PDF with a real text layer.
+
+    DECISION (docs/learning-guide.md 5.6, "fail loudly not silently"): the
+    tesseract binary is a separate OS-level install, not something `pip
+    install pytesseract` provides -- pytesseract is only a wrapper around
+    it. A missing binary is an environment problem, not "this one image had
+    no readable text," so pytesseract.TesseractNotFoundError is deliberately
+    NOT caught here. It propagates to load_insurance_documents' existing
+    per-document try/except (§1.5), which records it with its own real,
+    actionable message ("tesseract is not installed or it's not in your
+    PATH") instead of being folded into the generic empty-text case below.
+    Any other failure (corrupt/unreadable image) IS caught here, since that
+    really is specific to this one file.
+    """
+    from PIL import Image
+    import pytesseract
+
+    try:
+        image = Image.open(image_path)
+        return pytesseract.image_to_string(image)
+    except pytesseract.TesseractNotFoundError:
+        raise
+    except Exception as e:
+        logger.error("Failed to OCR image %s", image_path, exc_info=True)
+        return ""
+
+
+# Format-dispatch layer (docs/learning-guide.md 5.1): route by extension to
+# the right extractor, normalize every format to the same plain-text shape
+# before it reaches normalize_text()/chunking/metadata extraction below, so
+# nothing downstream needs to know or care what format a document arrived in.
+_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp"}
+_TEXT_EXTRACTORS = {
+    ".pdf": extract_text_from_pdf,
+    ".docx": extract_text_from_docx,
+    **{ext: extract_text_from_image for ext in _IMAGE_EXTENSIONS},
+}
+_PLAIN_TEXT_EXTENSIONS = {".txt"}
+
+
+def _is_supported_extension(ext: str) -> bool:
+    return ext in _PLAIN_TEXT_EXTENSIONS or ext in _TEXT_EXTRACTORS
+
+
 def load_insurance_documents(data_folder: Optional[str] = None) -> Dict:
     """Load and parse all insurance documents using Groq LLM."""
     if data_folder is None:
@@ -202,29 +274,43 @@ def load_insurance_documents(data_folder: Optional[str] = None) -> Dict:
         logger.warning("Data folder not found: %s", data_folder)
         return results
 
-    files = [f for f in os.listdir(data_folder) if f.endswith('.txt') or f.endswith('.pdf')]
+    files = [f for f in os.listdir(data_folder) if os.path.isfile(os.path.join(data_folder, f))]
 
     if not files:
-        logger.warning("No TXT or PDF files found in %s", data_folder)
+        logger.warning("No files found in %s", data_folder)
         return results
 
     logger.info("Parsing %d documents from %s", len(files), data_folder)
 
     for filename in files:
         filepath = os.path.join(data_folder, filename)
+        ext = os.path.splitext(filename)[1].lower()
 
         try:
-            if filename.endswith('.pdf'):
-                text = extract_text_from_pdf(filepath)
-                if not text.strip():
-                    logger.warning("%s: no text could be extracted from PDF", filename)
-                    results["metadata"].append(
-                        _error_record(filename, "No text could be extracted from PDF")
-                    )
-                    continue
-            else:
+            if not _is_supported_extension(ext):
+                # Fail loudly, not silently (docs/learning-guide.md 5.6): the
+                # old filter just excluded anything that wasn't .txt/.pdf
+                # from `files` above, so an unrecognized format vanished with
+                # no record anywhere. This is layer 1 (structured logging) of
+                # that pattern -- a queryable rate (layer 2) is deferred to
+                # Milestone 7, same as the README roadmap notes.
+                logger.warning("%s: unsupported file format (%s)", filename, ext or "no extension")
+                results["metadata"].append(
+                    _error_record(filename, f"Unsupported file format: {ext or '(no extension)'}")
+                )
+                continue
+
+            if ext in _PLAIN_TEXT_EXTENSIONS:
                 with open(filepath, 'r', encoding='utf-8') as f:
                     text = f.read()
+            else:
+                text = _TEXT_EXTRACTORS[ext](filepath)
+                if not text.strip():
+                    logger.warning("%s: no text could be extracted (%s)", filename, ext)
+                    results["metadata"].append(
+                        _error_record(filename, f"No text could be extracted from {ext} file")
+                    )
+                    continue
 
             text = normalize_text(text)
 

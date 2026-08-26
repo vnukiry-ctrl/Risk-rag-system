@@ -51,6 +51,15 @@ venv\Scripts\activate
 pip install streamlit requests
 ```
 
+## Learning Guide
+
+[`docs/learning-guide.md`](docs/learning-guide.md) — the field of options behind each
+build phase (chunking methods, embedding/vector-DB choices, evaluation metrics, etc.),
+when to use each, and what "good" looks like where it's measurable. Distinct from
+`docs/adr/`: the ADRs record *what this project chose and why*; the learning guide
+teaches *the menu it chose from*. Currently covers Milestones 1–4, growing with
+each milestone as it's built.
+
 ## Testing & Benchmarking
 
 Quality-evaluation suite (Milestone 4), run against the live API:
@@ -93,7 +102,7 @@ time) and see the script's docstring for what it measures and why.
 
 ## Project Status
 
-_Last updated: 2026-08-25 (Milestone 4 in progress — evaluation suite, benchmark script, and two real bugs it found)_
+_Last updated: 2026-08-26 (Milestone 5 started — multi-format DOCX support, format-dispatch layer, unsupported-format logging)_
 
 The roadmap below separates the **build phases** (the actual pipeline/system work, done in sequence) from **documentation** and **continuous improvement**, which aren't phases with an end state — they run alongside the build phases on an ongoing basis rather than being "reached" in turn.
 
@@ -105,7 +114,7 @@ The roadmap below separates the **build phases** (the actual pipeline/system wor
 | 2 | Vector Search Foundation | ✅ Complete |
 | 3 | RAG Chain Implementation | 🟡 Functional, basic |
 | 4 | Quality & Evaluation | 🟡 In progress |
-| 5 | Advanced Features | ⬜ Not started |
+| 5 | Advanced Features | 🟡 In progress |
 | 6 | Production Deployment | ⬜ Not started |
 | 7 | Monitoring & Ops | ⬜ Not started |
 | 8 | Security & Compliance | ⬜ Not started |
@@ -148,8 +157,8 @@ The roadmap below separates the **build phases** (the actual pipeline/system wor
 
 Deliverable: quality dashboard with KPIs.
 
-#### Milestone 5: Advanced Features — ⬜ Not started
-- [ ] Multi-format support (PDFs, DOCX, images)
+#### Milestone 5: Advanced Features — 🟡 In progress
+- [x] Multi-format support — DOCX (`extract_text_from_docx`) and image OCR (`extract_text_from_image`, pytesseract) added to `insurance_loader.py`'s format-dispatch layer. Unsupported/unrecognized file formats are now logged as an error record instead of silently excluded from the file scan (§5.6). **Known gap:** the `tesseract` OCR binary isn't installed on this dev machine (pip only installs the `pytesseract` wrapper) — this fails loudly with an actionable error record rather than silently, and `tests/test_multi_format.py`'s real-OCR test `skipif`s until the binary is present. Install it before relying on OCR in any environment that needs it.
 - [ ] Chat history & context carryover
 - [ ] Query rewriting (multi-hop questions)
 - [ ] Hallucination detection
@@ -172,6 +181,10 @@ Deliverable: production-ready deployment.
 - [ ] Alerting (failures, latency)
 - [ ] Analytics (usage, costs)
 - [ ] Auto-recovery
+
+**Reminder carried forward from Milestone 5:** Milestone 5's cheap-path fallbacks (multi-format extraction failures, low-confidence retrieval, hallucination-gate triggers) are logged as structured records only (layer 1 of the graceful-degradation pattern — see `docs/learning-guide.md` §5.6). Still owed here:
+- [ ] A queryable failure-rate metric/counter per fallback type (layer 2) — turns "it failed once" into "it fails N% of the time," the actual trigger for deciding whether to build the expensive path
+- [ ] Real monitoring/alerting on those rates (layer 3), folded into this milestone's Prometheus/Grafana + Alerting items above
 
 Deliverable: 24/7 monitoring dashboard.
 

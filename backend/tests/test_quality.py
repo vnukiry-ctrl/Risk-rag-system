@@ -27,6 +27,10 @@ import requests
 
 from golden_set import GOLDEN_SET
 
+# Opts this file (and only this file) into conftest.py's require_running_backend
+# fixture -- this suite genuinely needs the live API, unlike test_multi_format.py.
+pytestmark = pytest.mark.usefixtures("require_running_backend")
+
 BASE_URL = "http://127.0.0.1:8000"
 
 
