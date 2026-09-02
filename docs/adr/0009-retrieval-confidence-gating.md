@@ -1,6 +1,6 @@
 # ADR-0009: Retrieval-confidence gating before answering
 
-**Status:** Accepted (mechanism built; threshold untuned, see Consequences)
+**Status:** Accepted (mechanism built; does not catch the reproduction case it targeted, see Consequences)
 **Date:** 2026-08-27
 
 ## Context
@@ -41,18 +41,26 @@ irrelevant. Implemented inline in `/query` (`main.py`), right after `semantic_se
   the LLM framed as if it were adequate context.
 - Adds zero extra LLM calls — the score was already computed by Qdrant; this is pure
   post-retrieval logic.
-- **`MIN_RETRIEVAL_SCORE = 0.5` is a starting default, not a measured value.**
-  [ADR-0004](0004-entity-scoped-retrieval-filtering.md) measured genuinely-topical-but-wrong-document
-  matches clustering at 0.71–0.76 (cosine), so 0.5 sits deliberately below that range — meant
-  to catch retrieval that found nothing even loosely on-topic, not to second-guess a
-  borderline-but-real match. It has **not** been verified live against the Group Accident
-  reproduction case (`backend/tests/golden_set.py`) — the project's Groq daily token quota
-  was exhausted at the time this was built. A new test,
-  `test_hallucination_gate_group_accident` (`backend/tests/test_quality.py`), asserts the
-  correct behavior (retrieve the real doc, or refuse) and should be run once quota resets or
-  Ollama/Qdrant are otherwise available; the existing `xfail` retrievability test in the same
-  file is untouched, since this change doesn't make the document retrievable, only prevents
-  a confident wrong answer while it isn't.
+- **Verified live 2026-09-02, and it does not catch the case it was built for.** Running
+  `test_hallucination_gate_group_accident` against the live API: the Group Accident question
+  retrieves BW240599 (the wrong policy) at score ~0.72 and answers confidently — the gate
+  never fires because 0.72 clears the 0.5 floor. This confirms the risk flagged when
+  `MIN_RETRIEVAL_SCORE = 0.5` was chosen: [ADR-0004](0004-entity-scoped-retrieval-filtering.md)'s
+  0.71–0.76 "genuinely-topical-but-wrong-document" cluster is exactly where this wrong match
+  landed, and it's indistinguishable by score alone from a real, correct match in that same
+  band. **A single similarity-score floor cannot fix this specific failure** — raising the
+  threshold to exclude 0.72 would also reject legitimate borderline-but-real answers, not just
+  this wrong one. The test is now `xfail` (`backend/tests/test_quality.py`), documenting this
+  as a known gap rather than a bug to chase with more threshold-tuning.
+- What the gate still does: catch the *other* half of Milestone 3's known gaps — retrieval that
+  comes back weak/scattered across the board (nothing loosely on-topic), which is a different
+  and genuinely score-distinguishable failure mode from "one wrong document happens to score
+  respectably."
+- Fixing the Group Accident case for real needs something score-independent: making the
+  document retrievable in the first place (the existing `xfail` retrievability test), a
+  reranker, a per-query score-margin check (best-vs-second-best gap, not an absolute floor),
+  or an LLM self-consistency/faithfulness check post-answer. None implemented yet — deferred
+  until there's enough real traffic to justify the added latency/cost of any of them.
 - Same deferred-tuning stance as [ADR-0005](0005-defer-top-k-and-context-budget-tuning.md):
   a real threshold needs real score distributions across more documents and questions than
   currently exist. Watch for false refusals (a genuinely answerable question scoring just
