@@ -61,6 +61,18 @@ sessions_db = {}
 # golden eval set exists (see ADR-0005's same deferred-tuning stance).
 MIN_RETRIEVAL_SCORE = 0.5
 
+# DECISION (UNIVERSAL, readiness for real data): 24000 chars (~6k tokens at
+# the common ~4-chars/token English-text approximation -- no tokenizer
+# dependency pulled in just for an approximate budget) is an untuned
+# starting default, same honesty as the other constants above. Safe today
+# only because top_k defaults small and chunks are capped in size, which is
+# exactly why this exists ahead of need: a larger real document set, a
+# higher top_k, or bigger parent chunks could otherwise grow the prompt
+# past the model's context window (or just past what's useful) with no
+# warning. Recalibrate once real documents reveal a typical chunk-size/
+# top_k combination worth budgeting precisely for.
+CONTEXT_CHAR_BUDGET = 24000
+
 
 class QueryRequest(BaseModel):
     question: str
@@ -409,12 +421,6 @@ async def query_documents(request: QueryRequest):
                 "low_confidence": True,
             }
 
-        # DECISION (UNIVERSAL, currently unresolved -- not yet a decision):
-        # context below is built by concatenating every retrieved chunk with
-        # no token budget or truncation. Safe today only because top_k
-        # defaults small and chunks are capped in size; a new project with
-        # larger chunks or higher top_k needs an explicit truncation/budget
-        # step here before reusing this pattern.
         if chunks:
             # Structured fields (policy #, limits, dates) are extracted once per whole
             # document and are more reliable for simple facts than a handful of raw
@@ -446,10 +452,41 @@ async def query_documents(request: QueryRequest):
                 context += "Structured policy summary (authoritative for these fields):\n"
                 context += "\n".join(summary_lines) + "\n\n"
 
-            context += "Relevant excerpts from insurance documents:\n\n"
+            # DECISION (UNIVERSAL, readiness for real data): chunks arrive
+            # score-ordered (vector_store.semantic_search), so the budget is
+            # spent on the best matches first -- lower-ranked chunks get
+            # truncated or dropped before higher-ranked ones lose anything.
+            # A chunk that doesn't fully fit is truncated to the remaining
+            # budget rather than dropped whole, so partial context beats none.
+            excerpt_pieces = []
+            excerpt_chars = 0
+            chunks_included = 0
+            chunks_truncated = 0
             for c in chunks:
-                context += f"=== {c['source_file']} (policy {c.get('policy_number') or 'N/A'}) ===\n"
-                context += f"{c['text']}\n\n"
+                header = f"=== {c['source_file']} (policy {c.get('policy_number') or 'N/A'}) ===\n"
+                remaining = CONTEXT_CHAR_BUDGET - excerpt_chars
+                if remaining <= len(header):
+                    break
+                text = c["text"]
+                piece = header + text + "\n\n"
+                if len(piece) > remaining:
+                    allowed_text_len = remaining - len(header) - len("\n[...truncated...]\n\n")
+                    if allowed_text_len <= 0:
+                        break
+                    piece = header + text[:allowed_text_len] + "\n[...truncated...]\n\n"
+                    chunks_truncated += 1
+                excerpt_pieces.append(piece)
+                excerpt_chars += len(piece)
+                chunks_included += 1
+
+            if chunks_included < len(chunks) or chunks_truncated:
+                logger.warning(
+                    "Context budget applied: included %d/%d chunks (%d truncated) within %d-char budget",
+                    chunks_included, len(chunks), chunks_truncated, CONTEXT_CHAR_BUDGET,
+                )
+
+            context += "Relevant excerpts from insurance documents:\n\n"
+            context += "".join(excerpt_pieces)
         else:
             context = "No relevant document excerpts found. Please run /extract first if you haven't."
 
