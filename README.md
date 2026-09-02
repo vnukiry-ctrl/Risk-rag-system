@@ -18,6 +18,8 @@ Ingests insurance policy PDFs, extracts structured metadata (policy number, insu
 - Parent-child (size-based) chunking for retrieval: small chunks embedded for precision, larger parent passages returned for context
 - Semantic search over indexed documents (Qdrant + Ollama embeddings)
 - LLM-based Q&A with source attribution, blending structured metadata with retrieved excerpts
+- Multi-turn conversations: per-session chat history, plus history-aware query condensation so follow-up questions ("what about its deductible?") retrieve correctly
+- Retrieval-confidence gating: refuses to answer (instead of guessing) when nothing retrieved is similar enough to the question to trust
 - Structured logging and per-document error handling/reporting
 - Swappable LLM/embeddings providers (Groq ↔ Anthropic, Ollama ↔ Anthropic) via one-line config changes
 
@@ -57,7 +59,7 @@ pip install streamlit requests
 build phase (chunking methods, embedding/vector-DB choices, evaluation metrics, etc.),
 when to use each, and what "good" looks like where it's measurable. Distinct from
 `docs/adr/`: the ADRs record *what this project chose and why*; the learning guide
-teaches *the menu it chose from*. Currently covers Milestones 1–4, growing with
+teaches *the menu it chose from*. Currently covers Milestones 1–5, growing with
 each milestone as it's built.
 
 ## Testing & Benchmarking
@@ -102,7 +104,7 @@ time) and see the script's docstring for what it measures and why.
 
 ## Project Status
 
-_Last updated: 2026-08-26 (Milestone 5 started — multi-format DOCX support, format-dispatch layer, unsupported-format logging)_
+_Last updated: 2026-08-27 (Milestone 5 in progress — multi-format support, chat history, history-aware query condensation, retrieval-confidence gating for hallucination detection)_
 
 The roadmap below separates the **build phases** (the actual pipeline/system work, done in sequence) from **documentation** and **continuous improvement**, which aren't phases with an end state — they run alongside the build phases on an ongoing basis rather than being "reached" in turn.
 
@@ -159,9 +161,9 @@ Deliverable: quality dashboard with KPIs.
 
 #### Milestone 5: Advanced Features — 🟡 In progress
 - [x] Multi-format support — DOCX (`extract_text_from_docx`) and image OCR (`extract_text_from_image`, pytesseract) added to `insurance_loader.py`'s format-dispatch layer. Unsupported/unrecognized file formats are now logged as an error record instead of silently excluded from the file scan (§5.6). **Known gap:** the `tesseract` OCR binary isn't installed on this dev machine (pip only installs the `pytesseract` wrapper) — this fails loudly with an actionable error record rather than silently, and `tests/test_multi_format.py`'s real-OCR test `skipif`s until the binary is present. Install it before relying on OCR in any environment that needs it.
-- [ ] Chat history & context carryover
-- [ ] Query rewriting (multi-hop questions)
-- [ ] Hallucination detection
+- [x] Chat history & context carryover — `session_id`-keyed `sessions_db` (`main.py`), an in-memory `deque(maxlen=5)` of raw (question, answer) pairs replayed as real messages ahead of each new turn. Answers can now reference prior turns; lost on backend restart, same trade-off as `documents_db`.
+- [x] Query rewriting (multi-hop questions) — `condense_query()` (`main.py`, [ADR-0008](docs/adr/0008-history-aware-query-condensation.md)): when a session has history, the latest question is rewritten into a standalone one (pronouns/implied references resolved) *before* retrieval, so a follow-up like "what about its deductible?" retrieves correctly. Skipped on a session's first turn (no history to condense against); falls back to the raw question on any LLM failure. Decomposition/HyDE/step-back deliberately left out — no observed failure case for them yet.
+- [x] Hallucination detection — retrieval-confidence gating (`main.py`, [ADR-0009](docs/adr/0009-retrieval-confidence-gating.md)): if nothing retrieved clears `MIN_RETRIEVAL_SCORE`, `/query` skips the LLM and returns an explicit "not enough relevant information" response (`low_confidence: true`) instead of answering from weak context. Targets the documented oversized-PDF misattribution bug (Milestone 3 known gaps). **Not yet live-verified** — the threshold is an untuned starting default, and the Groq daily token quota was exhausted while building this, so `test_hallucination_gate_group_accident` (`backend/tests/test_quality.py`) hasn't been run yet; run it once quota resets.
 - [ ] Confidence scoring
 
 Deliverable: feature-rich RAG system.

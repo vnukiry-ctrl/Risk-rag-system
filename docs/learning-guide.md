@@ -273,6 +273,16 @@ feature itself rather than bolted on afterward.
 history to rewrite against — building history carryover first is the natural order,
 matching the mentor take from the milestone kickoff discussion.
 
+**This project's choice:** full history in prompt, hard-capped rather than summarized
+— `sessions_db` (`main.py`) keys an in-memory `deque(maxlen=MAX_HISTORY_TURNS)` (5) per
+`session_id`, and prior (question, answer) pairs are replayed as real `user`/`assistant`
+messages ahead of the current turn. Summarization was skipped: at 5 turns max, the
+prompt-growth problem summarization solves hasn't actually shown up yet. Same
+durability trade-off as `documents_db` — lost on backend restart, acceptable for a
+conversation in a way it wouldn't be for `feedback_store.py`'s data. This carryover
+covers the *answer* only; it does not by itself fix retrieval for follow-up
+questions — that gap, and why it needed its own fix, is 5.3.
+
 ### 5.3 Query rewriting (multi-hop questions)
 
 | Technique | What it does | When to use |
@@ -285,6 +295,17 @@ matching the mentor take from the milestone kickoff discussion.
 **Cost to weigh:** every technique above adds at least one extra LLM call before
 retrieval even starts — worth it only once plain single-shot retrieval is a proven
 bottleneck for real multi-hop questions, not a hypothetical one.
+
+**This project's choice:** history-aware condensation only (`condense_query`,
+`main.py`), because it directly fixes a concrete, already-documented gap — 5.2 gave
+answers memory of prior turns, but `semantic_search` still only ever saw the raw
+question, so "what about its deductible?" retrieved on the word "its" and nothing
+else. Condensation runs *before* retrieval, rewrites that into "Mount Royal
+University policy deductible", and only fires when a session actually has history
+— no history, no extra LLM call. See [ADR-0008](../adr/0008-history-aware-query-condensation.md)
+for why decomposition, HyDE, and step-back were left out: none of them have an
+observed failure case in this document set yet, same "don't pay for a hypothetical
+bottleneck" rule as the cost note above.
 
 ### 5.4 Hallucination detection
 
@@ -299,6 +320,18 @@ bottleneck for real multi-hop questions, not a hypothetical one.
 `backend/tests/golden_set.py`) — building the detector against a known failure and
 watching that specific test flip from `xfail` to passing is a much stronger signal
 than building blind against a hypothetical.
+
+**This project's choice:** retrieval-confidence gating — zero extra LLM calls, and it's
+the only option of the four that fixes the reproduced failure at its root (weak
+retrieval never reaches the LLM framed as adequate context) rather than trying to
+catch a bad answer after it's already been written. If the best retrieved score
+falls below `MIN_RETRIEVAL_SCORE`, `/query` (`main.py`) skips the LLM call and
+returns an explicit "not enough relevant information" response with a
+`low_confidence: true` flag. See [ADR-0009](../adr/0009-retrieval-confidence-gating.md)
+for the important caveat: the threshold (0.5) is a starting default modeled on
+ADR-0004's measured score range, not itself independently measured yet — same
+honest "untuned default" status as `top_k`, flagged rather than dressed up as more
+certain than it is.
 
 ### 5.5 Confidence scoring
 

@@ -51,6 +51,16 @@ documents_db = load_documents()
 MAX_HISTORY_TURNS = 5
 sessions_db = {}
 
+# DECISION (UNIVERSAL, Milestone 5.4, ADR-0009): 0.5 is an untuned starting
+# default, not a measured value -- same honesty as MAX_HISTORY_TURNS and
+# top_k above. ADR-0004 measured genuinely-topical-but-wrong-document
+# matches clustering at 0.71-0.76 (cosine, Qdrant), so this floor sits below
+# that range deliberately: it's meant to catch retrieval that found nothing
+# even loosely on-topic (the oversized-PDF case), not to second-guess a
+# borderline-but-real match. Recalibrate against real queries once a larger
+# golden eval set exists (see ADR-0005's same deferred-tuning stance).
+MIN_RETRIEVAL_SCORE = 0.5
+
 
 class QueryRequest(BaseModel):
     question: str
@@ -113,6 +123,54 @@ def find_relevant_source_files(question: str) -> Optional[List[str]]:
             matches.add(source_file)
 
     return sorted(matches) if matches else None
+
+
+def condense_query(question: str, history: deque) -> str:
+    """Rewrite a follow-up question into a standalone one, using prior turns.
+
+    DECISION (UNIVERSAL, Milestone 5.3, ADR-0008): only called when history is
+    non-empty -- the first turn in a session has nothing to condense against,
+    so retrieval uses the raw question directly and this LLM call never
+    fires. That's a deliberate cost guard: query rewriting adds a full extra
+    LLM round-trip before retrieval even starts, and most turns in a session
+    are the first one or are already standalone.
+
+    Falls back to the raw question on any failure -- same graceful-degradation
+    discipline as the 5.1 format-dispatch layer (a broken rewrite should
+    degrade to today's behavior, not break the query).
+    """
+    history_text = "\n".join(
+        f"User: {turn['question']}\nAssistant: {turn['answer']}" for turn in history
+    )
+
+    try:
+        rewritten = llm_complete(
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Rewrite the user's latest question into a standalone question that "
+                        "makes sense without the conversation history, by resolving pronouns "
+                        "and implied references (e.g. \"its deductible\" -> \"<policy name> "
+                        "deductible\"). Preserve the original meaning and intent exactly -- do "
+                        "not answer the question, add information, or change what is being "
+                        "asked. If the question is already standalone, return it unchanged. "
+                        "Reply with only the rewritten question, no preamble or quotes."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"Conversation history:\n{history_text}\n\nLatest question: {question}",
+                },
+            ],
+            temperature=0,
+            max_tokens=100,
+        )
+        rewritten = (rewritten or "").strip().strip('"')
+        return rewritten or question
+    except Exception:
+        logger.exception("Query condensation failed, falling back to raw question")
+        return question
 
 
 @app.get("/")
@@ -235,7 +293,19 @@ async def query_documents(request: QueryRequest):
     start_time = time.time()
 
     try:
-        source_files = find_relevant_source_files(request.question)
+        # DECISION (UNIVERSAL, Milestone 5.3, ADR-0008): retrieval runs against
+        # search_query (condensed when history exists), not request.question,
+        # so a follow-up like "what about its deductible?" resolves the
+        # pronoun before embedding/entity-matching. The answer prompt below
+        # still uses request.question -- the user's original phrasing -- so
+        # the reply reads naturally rather than echoing the rewrite.
+        search_query = request.question
+        if history:
+            search_query = await run_in_threadpool(condense_query, request.question, history)
+            if search_query != request.question:
+                logger.info("Condensed query: %r -> %r", request.question, search_query)
+
+        source_files = find_relevant_source_files(search_query)
         if source_files:
             logger.info("Scoping search to %d matched document(s): %s", len(source_files), source_files)
         # Same run_in_threadpool reasoning as /extract above: semantic_search
@@ -243,8 +313,52 @@ async def query_documents(request: QueryRequest):
         # both blocking network I/O -- without offloading them, one slow
         # query freezes the whole server for every other concurrent request.
         chunks = await run_in_threadpool(
-            semantic_search, request.question, top_k=effective_top_k, source_files=source_files
+            semantic_search, search_query, top_k=effective_top_k, source_files=source_files
         )
+
+        # DECISION (UNIVERSAL, Milestone 5.4, ADR-0009): retrieval-confidence
+        # gating. An empty `chunks` list already produces an honest "no
+        # excerpts found" message via the `else` branch below -- this covers
+        # the other half of the oversized-PDF bug (Milestone 3 known gaps):
+        # chunks DO come back, just from an unrelated policy, and the LLM
+        # answered confidently anyway instead of refusing. If nothing
+        # retrieved clears MIN_RETRIEVAL_SCORE, refuse before the LLM ever
+        # sees the weak context -- cheaper and more reliable than asking the
+        # model to police its own grounding on top of a bad retrieval.
+        if chunks and max(c["score"] for c in chunks) < MIN_RETRIEVAL_SCORE:
+            best_score = max(c["score"] for c in chunks)
+            logger.warning(
+                "Low-confidence retrieval for %r: best score %.3f < %.2f threshold, refusing to answer",
+                request.question, best_score, MIN_RETRIEVAL_SCORE,
+            )
+            answer = (
+                "I don't have enough relevant information in the indexed documents to "
+                "answer this confidently. The closest matches found weren't similar enough "
+                "to the question to be trustworthy -- try rephrasing, naming the policy "
+                "directly, or confirm the right document has been extracted and indexed."
+            )
+            sources = [
+                {"source_file": c["source_file"], "policy_number": c.get("policy_number"), "score": c["score"]}
+                for c in chunks
+            ]
+            history.append({"question": request.question, "answer": answer})
+            sessions_db[session_id] = history
+            log_experiment_result(
+                variant=request.variant,
+                question=request.question,
+                top_k=effective_top_k,
+                temperature=effective_temperature,
+                sources=sources,
+                latency=time.time() - start_time,
+            )
+            return {
+                "question": request.question,
+                "answer": answer,
+                "sources": sources,
+                "chunks_searched": len(chunks),
+                "session_id": session_id,
+                "low_confidence": True,
+            }
 
         # DECISION (UNIVERSAL, currently unresolved -- not yet a decision):
         # context below is built by concatenating every retrieved chunk with
@@ -349,7 +463,8 @@ async def query_documents(request: QueryRequest):
             "answer": answer,
             "sources": sources,
             "chunks_searched": len(chunks),
-            "session_id": session_id
+            "session_id": session_id,
+            "low_confidence": False,
         }
     except Exception as e:
         logger.exception("Query failed")

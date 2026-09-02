@@ -36,3 +36,5 @@ What this makes easier, what it makes harder, and what would need to be true to 
 | [0005](0005-defer-top-k-and-context-budget-tuning.md) | Defer top-k and context-budget tuning | Deferred |
 | [0006](0006-defer-ab-testing-framework.md) | Defer A/B testing framework | Deferred |
 | [0007](0007-ab-mechanism-built-not-activated.md) | A/B testing mechanism built, not activated | Accepted (mechanism only) |
+| [0008](0008-history-aware-query-condensation.md) | History-aware query condensation before retrieval | Accepted |
+| [0009](0009-retrieval-confidence-gating.md) | Retrieval-confidence gating before answering | Accepted (threshold untuned) |

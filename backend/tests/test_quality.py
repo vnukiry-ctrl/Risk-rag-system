@@ -219,6 +219,29 @@ def test_known_limitation_ambiguous_entity_scoping(query_results):
     assert hit, "expected miss: ambiguous entity name currently scopes to the wrong document"
 
 
+def test_hallucination_gate_group_accident(query_results):
+    """Milestone 5.4 (ADR-0009): the low-confidence case must not silently
+    misattribute coverage to the wrong policy.
+
+    Unlike the xfail test below (which checks whether the real document
+    becomes retrievable), this checks the other half of the same bug: even
+    while the document stays unretrievable, the system must not confidently
+    answer from the wrong one. Two outcomes are acceptable -- retrieval
+    already finds the real document, or the confidence gate (main.py,
+    MIN_RETRIEVAL_SCORE) refuses to answer -- everything else means a
+    confidently wrong answer slipped through.
+    """
+    case = next(r for r in query_results if "Group Accident" in r["case"]["question"])
+    response = case["response"]
+    retrieved_files = {s.get("source_file") for s in response.get("sources", [])}
+    found_real_doc = "25-26 Group Accident Policy 100013386.pdf" in retrieved_files
+    refused = response.get("low_confidence") is True
+    assert found_real_doc or refused, (
+        "neither retrieved the real document nor refused on low confidence -- got a "
+        f"confident answer sourced from the wrong policy: {response.get('answer', '')[:200]!r}"
+    )
+
+
 @pytest.mark.xfail(
     strict=True,
     reason="Group Accident policy (100013386.pdf) doesn't surface in top-5 for an "
