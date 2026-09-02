@@ -106,7 +106,7 @@ time) and see the script's docstring for what it measures and why.
 
 ## Project Status
 
-_Last updated: 2026-08-27 (Milestone 5 in progress — multi-format support, chat history, history-aware query condensation, retrieval-confidence gating for hallucination detection)_
+_Last updated: 2026-09-02 (Milestone 5 in progress — multi-format support, chat history, history-aware query condensation, retrieval-confidence gating, context token budget; Milestone 3's entity-scoped filtering bug fixed; A/B and confidence-gate logging/UI prepped for real data)_
 
 The roadmap below separates the **build phases** (the actual pipeline/system work, done in sequence) from **documentation** and **continuous improvement**, which aren't phases with an end state — they run alongside the build phases on an ongoing basis rather than being "reached" in turn.
 
