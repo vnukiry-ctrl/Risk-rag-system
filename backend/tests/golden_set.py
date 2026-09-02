@@ -63,18 +63,20 @@ GOLDEN_SET = [
     {
         "question": "What is the coverage limit for the Mount Royal University Commercial General Liability policy?",
         "expected_policy": "AVP406486",
-        "type": "known_limitation",
+        "type": "structured_fact",
+        "expected_answer_contains": ["5,000,000", "5000000"],
         "note": (
-            "Entity-scoped filtering (ADR-0004) matches the question against "
-            "insured_name substrings. 'Mount Royal University' is the insured "
-            "on more than one policy (this CGL policy AND the BW240599 "
-            "Personal Accident policy), so the scope filter picks the wrong "
-            "single document instead of narrowing correctly -- confirmed live: "
-            "this exact question currently returns only BW240599 chunks and an "
-            "empty answer. Rephrasing to name the policy number directly "
-            "('policy AVP406486') works today; the ambiguous-entity case does "
-            "not. Fix belongs in find_relevant_source_files() (main.py) -- "
-            "disambiguate by insurance_type too, not insured_name alone."
+            "FIXED 2026-09-02 (was known_limitation): the real bug wasn't "
+            "insured_name matching two documents -- AVP406486's extracted "
+            "insured_name is a long formal phrase ('User Group of the Board "
+            "of Governors of Mount Royal University as on file') that's never "
+            "a substring of how this question names it, so it never entered "
+            "scoping at all; only the wrong document (BW240599, insured_name "
+            "'MOUNT ROYAL UNIVERSITY') matched by name and won by default. "
+            "find_relevant_source_files() (main.py) now checks insurance_type "
+            "as an independent match signal ('Commercial General Liability' "
+            "is a direct substring of this question), which scopes to both "
+            "documents and lets semantic ranking + the LLM pick correctly."
         ),
     },
     {

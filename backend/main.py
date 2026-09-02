@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
-from typing import List, Optional
+from typing import Dict, List, Optional
 from insurance_loader import load_insurance_documents
 from vector_store import index_documents, semantic_search
 from llm_client import llm_complete
@@ -108,6 +108,8 @@ def find_relevant_source_files(question: str) -> Optional[List[str]]:
     """
     q = question.lower()
     matches = set()
+    insured_name_matches: Dict[str, List[dict]] = {}
+
     for doc in documents_db.values():
         if "error" in doc:
             continue
@@ -120,14 +122,52 @@ def find_relevant_source_files(question: str) -> Optional[List[str]]:
             matches.add(source_file)
             continue
 
+        # DECISION (UNIVERSAL, fixes the Milestone 3 known gap / ADR-0004
+        # follow-up -- see tests/golden_set.py's Mount Royal case): checked
+        # as an independent, first-class signal (like policy_number/insurer
+        # below), not just a tiebreaker nested under insured_name. Live data
+        # showed why: AVP406486's extracted insured_name is a long formal
+        # phrase ("User Group of the Board of Governors of Mount Royal
+        # University as on file") that's never a substring of how a real
+        # question names it, so it never entered the insured_name match path
+        # at all -- only the wrong document (BW240599, insured_name "MOUNT
+        # ROYAL UNIVERSITY") matched by name and won by default. A question
+        # naming the specific insurance_type ("Commercial General Liability")
+        # now scopes to the right document directly, regardless of whether
+        # its insured_name phrasing matches.
+        insurance_type = doc.get("insurance_type")
+        if insurance_type and len(insurance_type) >= 6 and insurance_type.lower() in q:
+            matches.add(source_file)
+            continue
+
         insured_name = doc.get("insured_name")
         if insured_name and len(insured_name) >= 6 and insured_name.lower() in q:
-            matches.add(source_file)
+            insured_name_matches.setdefault(insured_name, []).append(doc)
             continue
 
         insurance_company = doc.get("insurance_company")
         if insurance_company and len(insurance_company) >= 6 and insurance_company.lower() in q:
             matches.add(source_file)
+
+    # DECISION (UNIVERSAL): a genuine insured_name collision -- two documents
+    # sharing the identical extracted name string -- is a separate case from
+    # the one above: matching on name alone can't tell them apart. When that
+    # happens, narrow using insurance_type; if it still doesn't resolve to
+    # exactly one document, leave these candidates out of scoping entirely
+    # rather than guessing -- an unscoped search that finds the right chunks
+    # on merit beats a confidently wrong scope (same principle as ADR-0009's
+    # confidence gate).
+    for insured_name, docs in insured_name_matches.items():
+        if len(docs) == 1:
+            matches.add(docs[0]["source_file"])
+            continue
+        narrowed = [
+            doc for doc in docs
+            if doc.get("insurance_type") and len(doc["insurance_type"]) >= 6
+            and doc["insurance_type"].lower() in q
+        ]
+        if len(narrowed) == 1:
+            matches.add(narrowed[0]["source_file"])
 
     return sorted(matches) if matches else None
 
