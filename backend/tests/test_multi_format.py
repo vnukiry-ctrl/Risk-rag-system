@@ -16,7 +16,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from docx import Document
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 from insurance_loader import (
     extract_text_from_docx,
@@ -59,9 +59,18 @@ def test_supported_extensions():
 
 
 def _make_text_image(path, text):
-    image = Image.new("RGB", (400, 100), color="white")
+    """PIL's default font (no font given) is a tiny ~11px bitmap font that
+    real OCR engines misread digits on (confirmed live: tesseract read a
+    generated '9' as '0') -- this is a synthetic-test-fidelity problem, not
+    an extract_text_from_image() bug, so fix it here with a real font size
+    rather than loosening the assertion."""
+    image = Image.new("RGB", (500, 150), color="white")
     draw = ImageDraw.Draw(image)
-    draw.text((10, 40), text, fill="black")
+    try:
+        font = ImageFont.truetype("arial.ttf", 40)
+    except OSError:
+        font = ImageFont.load_default()
+    draw.text((10, 50), text, fill="black", font=font)
     image.save(path)
 
 
