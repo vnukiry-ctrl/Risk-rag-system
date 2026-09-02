@@ -23,12 +23,22 @@ def record_feedback(
     rating: str,
     comment: Optional[str] = None,
     sources: Optional[List[Dict]] = None,
+    session_id: Optional[str] = None,
+    variant: Optional[str] = None,
+    low_confidence: Optional[bool] = None,
 ) -> Dict:
     """Append one feedback entry. Returns the stored record (with timestamp).
 
     Sources are stored alongside the rating so a "down" vote can be traced
     back to which document/chunk produced the bad answer -- a rating with no
     way to trace the retrieval behind it isn't actionable, just a number.
+
+    DECISION (UNIVERSAL, readiness for real data): session_id/variant/
+    low_confidence are carried through from the /query response that
+    produced this answer (main.py), not re-derived here. Without them, a
+    "down" vote can't be joined back to which A/B variant served it or
+    whether ADR-0009's confidence gate was involved -- exactly the join
+    needed once there's enough real feedback to verify either one.
     """
     entry = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -37,6 +47,9 @@ def record_feedback(
         "rating": rating,
         "comment": comment,
         "sources": sources or [],
+        "session_id": session_id,
+        "variant": variant,
+        "low_confidence": low_confidence,
     }
     with open(FEEDBACK_LOG_PATH, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")

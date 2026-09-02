@@ -50,20 +50,33 @@ def log_experiment_result(
     temperature: float,
     sources: List[Dict],
     latency: float,
+    session_id: Optional[str] = None,
+    low_confidence: bool = False,
 ) -> None:
     """Record which variant served a request and what it returned.
 
     Logged even when variant is None (the "control"/default path), so a
     later analysis can compare "requests that opted into a variant" against
     the ordinary baseline traffic from the same time window.
+
+    DECISION (UNIVERSAL, readiness for real data, no A/B or confidence-gate
+    verification happening yet): `sources` used to be flattened down to just
+    `source_files` here, silently dropping each chunk's retrieval score --
+    the exact number ADR-0009's confidence gate and any future A/B precision
+    comparison need. Kept as full `sources` dicts now, plus `low_confidence`
+    and `session_id`, so once real traffic exists, a threshold or variant
+    comparison can be done straight from this log instead of needing new
+    instrumentation first.
     """
     entry = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "variant": variant,
+        "session_id": session_id,
         "question": question,
         "top_k": top_k,
         "temperature": temperature,
-        "source_files": [s.get("source_file") for s in sources],
+        "sources": sources,
+        "low_confidence": low_confidence,
         "latency": latency,
     }
     with open(EXPERIMENTS_LOG_PATH, "a", encoding="utf-8") as f:

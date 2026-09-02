@@ -17,3 +17,19 @@ Added `backend/experiments.py`: named variant configs (`control`, `wider_retriev
 - `/query`'s behavior is unchanged for every existing caller (frontend, `perf_smoke_test.py`, `tests/`) — none of them pass `variant`.
 - **Open verification item, not yet closed:** the `variant` code path itself has not been exercised end-to-end against a live Qdrant-backed query. Verification was blocked by an unrelated environment issue — a stale/orphaned process holding port 8000 and the Qdrant on-disk lock that Windows' own tools (`tasklist`, `Get-CimInstance`) couldn't identify (see conversation 2026-08-25). **Revisit trigger:** once that port is clear and the backend restarts cleanly, run one `/query` call with `"variant": "wider_retrieval"` and confirm `chunks_searched` reflects `top_k=10` and the entry lands in `experiments_log.jsonl` — only then is this ADR's mechanism considered verified, not just written.
 - Actually *activating* comparisons (reading `experiments_log.jsonl` to draw a conclusion) remains blocked on ADR-0006's original condition: real traffic or a golden set large enough per variant to be statistically meaningful.
+
+## Update (2026-09-02): logging schema fixed ahead of real data, still not verified end-to-end
+While preparing for real usage, found that `log_experiment_result()` was flattening each
+result's `sources` down to bare `source_files` — dropping the retrieval score, and never
+recording `session_id` or `low_confidence` at all. That would have made a later variant
+comparison (or ADR-0009's confidence-threshold recalibration) impossible to do from this log
+alone once real traffic exists — exactly the situation this ADR's "plumbing, not a rebuild"
+reasoning was meant to avoid. Fixed: `sources` (with scores) plus `session_id` and
+`low_confidence` are now recorded on every `/query` call. `feedback_store.record_feedback()`
+got the same fix — a rating now carries `session_id`/`variant`/`low_confidence` so a "down"
+vote can be joined back to what produced it. The frontend (`frontend/app.py`) previously never
+sent `session_id` back on follow-up questions and had no feedback UI at all, so under real
+usage `feedback_log.jsonl` would have stayed empty and no session ever accumulated multi-turn
+history — both fixed (session persists in `st.session_state` across turns; 👍/👎 buttons call
+`/feedback`). **The open verification item above is unchanged and still outstanding** — this
+only ensures that once it's run, the data needed to interpret the result is actually captured.

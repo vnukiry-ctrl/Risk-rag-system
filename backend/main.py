@@ -89,6 +89,13 @@ class FeedbackRequest(BaseModel):
     rating: str  # "up" or "down" -- no third option; forcing a choice is what makes this actionable
     comment: Optional[str] = None
     sources: Optional[List[dict]] = None
+    # DECISION (UNIVERSAL, readiness for real data): pass through the same
+    # /query response fields verbatim so this feedback entry can be joined
+    # back to the variant/confidence state that produced the answer -- see
+    # feedback_store.record_feedback.
+    session_id: Optional[str] = None
+    variant: Optional[str] = None
+    low_confidence: Optional[bool] = None
 
 
 def find_relevant_source_files(question: str) -> Optional[List[str]]:
@@ -350,6 +357,8 @@ async def query_documents(request: QueryRequest):
                 temperature=effective_temperature,
                 sources=sources,
                 latency=time.time() - start_time,
+                session_id=session_id,
+                low_confidence=True,
             )
             return {
                 "question": request.question,
@@ -456,6 +465,8 @@ async def query_documents(request: QueryRequest):
             temperature=effective_temperature,
             sources=sources,
             latency=time.time() - start_time,
+            session_id=session_id,
+            low_confidence=False,
         )
 
         return {
@@ -485,6 +496,9 @@ async def submit_feedback(request: FeedbackRequest):
         rating=request.rating,
         comment=request.comment,
         sources=request.sources,
+        session_id=request.session_id,
+        variant=request.variant,
+        low_confidence=request.low_confidence,
     )
     return {"status": "recorded", "entry": entry}
 
