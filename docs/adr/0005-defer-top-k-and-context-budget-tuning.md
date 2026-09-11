@@ -1,6 +1,6 @@
 # ADR-0005: Defer top-k and context-budget tuning
 
-**Status:** Deferred
+**Status:** Top-k superseded by [ADR-0011](0011-topk-tuned-from-real-data.md); context-budget still deferred
 **Date:** 2026-08-25 (top-k deferral originating in Milestone 2)
 
 ## Context
@@ -22,3 +22,4 @@ Explicitly defer tuning both until a golden eval set exists, rather than picking
 - Both `/query`'s retrieval breadth and its context-window safety remain provisional. The context-budget gap in particular is a latent risk, not a hypothetical one — the token-limit failure has already happened once elsewhere in this pipeline.
 - Milestone 3's "Response quality tuning / evaluation" checkbox cannot honestly close while this is deferred — they share the same blocking dependency.
 - Revisit trigger: once a golden eval set exists, both should be tuned together, since top-k and context-budget interact (raising top-k without a corresponding truncation strategy is what would trigger the token-limit failure mode described above).
+- **2026-09-11 update:** the golden eval set now exists (16 real documents, `tests/golden_set.py`). Top-k was measured and resolved — see [ADR-0011](0011-topk-tuned-from-real-data.md), which supersedes this ADR for that half only. Context-budget tuning is still deferred; it wasn't addressed by that measurement.

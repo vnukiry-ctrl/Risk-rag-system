@@ -72,32 +72,37 @@ uvicorn main:app --reload   # in one terminal
 pytest tests/ -v -s         # in another
 ```
 Retrieval hit rate/MRR/precision@k, structured-fact answer correctness, and
-latency percentiles are all scored against `tests/golden_set.py` — a small,
-hand-verified set of question -> known-correct-fact pairs (see that file's
-docstring for what "golden set" means at this scale and why the numbers
-aren't yet statistically trustworthy). One case is marked `xfail` for a
-known, understood bug (see Milestone 3 known gaps below) rather than
-skipped, so the suite still surfaces the moment it gets fixed. (A second
-case, the ambiguous-entity-scoping bug, was fixed 2026-09-02 and promoted
-out of `xfail` — see below.)
+latency percentiles are all scored against `tests/golden_set.py` — 14 cases
+(12 structured-fact + 2 known-limitation) hand-verified directly against
+the 16 real Mount Royal University insurance documents in `backend/data/`
+(rebuilt 2026-09-08/09-11, replacing an earlier version tested against 9
+placeholder documents — see that file's docstring). Two real, understood
+gaps stay in the set as `known_limitation` cases rather than being dropped:
+a `documents_db` key-collision bug (two document pairs share a policy
+number; whichever loads later in `os.listdir()` order silently overwrites
+the other's structured metadata) and one document whose real declarations
+sit behind enough boilerplate that LLM metadata extraction never reaches
+them (though retrieval and hallucination-avoidance both still work
+correctly for it — see the case notes in `golden_set.py`).
 
 **What "good" looks like for each metric:**
 
 | Metric | Ideal (good) | Not good |
 |---|---|---|
 | Hit Rate@k | ≥ 90% (small curated set) | < 70% |
-| MRR | ≥ 0.8 general convention; **this suite's measured floor is 0.75** (one case's correct doc legitimately ranks 2nd within a deliberately-broadened scope — see `test_mean_reciprocal_rank`) | < 0.5 |
-| Precision@k | ~1.0 *only* on entity-scoped questions (ADR-0004); 0.2–0.5 is normal/expected on unscoped ones | a drop specifically on a scoped question |
+| MRR | ≥ 0.8 general convention; **this suite's measured floor is 0.75** — measured result has landed at 0.79 consistently (hit rate 83%, 10/12), with *which* 1-2 cases miss the top-k window varying between runs (ordinary embedding-ranking noise, not a persistent per-document bug — see `test_mean_reciprocal_rank`) | < 0.5 |
+| Precision@k | ~1.0 *only* on entity-scoped questions (ADR-0004, matches on policy number/insured name/insurer/insurance_type); measured 0.72-0.79 across `top_k` 2-5 since most real questions name one of those four things; 0.2–0.5 is normal/expected on the few that don't | a broad drop across many cases |
 | Answer correctness (structured facts) | 100% — no partial credit on a dollar figure or policy number | any miss at all |
-| Latency p50 / p95 | aspirational UX target: < 3s / < 6s | this system's measured real floor: < 18s / < 28s (Groq round-trip dominates; see `test_latency_percentiles`) |
+| Latency p50 / p95 | aspirational UX target: < 3s / < 6s; measured floor at the tuned `top_k=2` default: < 15s / < 20s (provisional — see `test_latency_percentiles`) | this system's *previous* measured floor at the old `top_k=5` default was < 18s / < 28s (Groq round-trip dominates) |
 
 Every number above is either a general UX/IR convention (latency, hit rate,
 MRR) or was pulled from this project's own measured runs (precision's
 scoped/unscoped split, the latency floor) — not guessed and left unchecked.
 See `backend/tests/test_quality.py` for where each one is scored, and the
 top-k experiment (`backend/tests/topk_experiment.py` /
-`backend/tests/topk_results.json`) for how precision and latency actually
-move as `top_k` changes.
+`backend/tests/topk_results.json`, [ADR-0011](docs/adr/0011-topk-tuned-from-real-data.md))
+for how hit rate/MRR/precision/latency actually move as `top_k` changes —
+that sweep is what picked the current `top_k=2` default.
 
 Indexing/embedding throughput benchmark (separate from query-time
 performance): `python backend/benchmark_indexing.py` — **stop the backend
@@ -106,7 +111,7 @@ time) and see the script's docstring for what it measures and why.
 
 ## Project Status
 
-_Last updated: 2026-09-02 (Milestone 5 in progress — multi-format support, chat history, history-aware query condensation, retrieval-confidence gating, context token budget; Milestone 3's entity-scoped filtering bug fixed; A/B and confidence-gate logging/UI prepped for real data)_
+_Last updated: 2026-09-11 (real documents loaded — 16 Mount Royal University insurance policies replace the placeholder set; `golden_set.py` rebuilt from scratch and hand-verified against them; top-k tuned from k=5 to k=2 with real measurements, closing Milestone 3's top-k half — see ADR-0011; Milestone 6 started — API key auth and per-endpoint rate limiting)_
 
 The roadmap below separates the **build phases** (the actual pipeline/system work, done in sequence) from **documentation** and **continuous improvement**, which aren't phases with an end state — they run alongside the build phases on an ongoing basis rather than being "reached" in turn.
 
@@ -134,23 +139,24 @@ The roadmap below separates the **build phases** (the actual pipeline/system wor
 - [x] Embeddings generation (Ollama, swappable)
 - [x] Vector store integration (Qdrant, persistent on-disk)
 - [x] Semantic search endpoint (verified end-to-end against real documents)
-- [x] Top-K retrieval (fixed default; full tuning deferred until a production-scale golden eval set exists)
+- [x] Top-K retrieval — **tuned 2026-09-11** from the placeholder default (5) to a measured value (2), via `topk_experiment.py`'s sweep against the real document set; see [ADR-0011](docs/adr/0011-topk-tuned-from-real-data.md)
 - [x] Performance testing (retrieval smoke test — 5/5 hit rate; see `backend/perf_smoke_test.py`)
 
 **Known gaps carried forward:**
-- One oversized PDF (`25-26 Group Accident Policy 100013386.pdf`) fails LLM metadata extraction (Groq per-request token limit) — its content is still indexed and searchable via `/query`, just without structured metadata.
 - Extracted document metadata (`documents_db`) is in-memory only and must be rebuilt via `/extract` after each backend restart — the Qdrant vector index persists, but this dict doesn't. See `DOCUMENTATION2.md` Step 10 for details.
-- Top-k is a fixed default (5), not tuned — deliberately deferred until a real production-scale golden Q&A eval set exists.
+- `documents_db`'s dict-keyed-by-policy_number design silently drops one document's metadata whenever two real files share a policy number (a policy plus its own adjustment endorsement or invoice, in the real data) — see `golden_set.py`'s `known_limitation` cases for the two instances this actually hits.
+- One real document (`26-27 Excess Side A D&O Policy 01-142-91-44 - Insured Copy.pdf`) has its actual declarations buried behind ~16 pages of insurer privacy-policy boilerplate, which LLM metadata extraction never reads past — every structured field comes back empty for it. Retrieval and answer-grounding both still work correctly despite this (verified live), so it's a structured-metadata gap only, not a Q&A-quality one.
 
 #### Milestone 3: RAG Chain Implementation — 🟡 Functional, basic
 - [x] LLM integration (Groq, swappable)
 - [x] Prompt engineering with structured + retrieved context
 - [x] Source attribution
-- [ ] Response quality tuning / evaluation
+- [x] Response quality tuning / evaluation — **top-k half closed 2026-09-11** ([ADR-0011](docs/adr/0011-topk-tuned-from-real-data.md)): measured against the real 16-document golden set, not guessed. Context-budget tuning (`CONTEXT_CHAR_BUDGET`, ADR-0005) and the confidence-gate threshold (`MIN_RETRIEVAL_SCORE`, ADR-0009) are still open — lower-risk now that less text gets retrieved per query by default, but neither was itself re-measured by this pass.
 
 **Known gaps carried forward (found by Milestone 4's eval suite):**
-- ~~Entity-scoped filtering matches on insured-name substrings, which breaks when one insured has multiple policies~~ — **fixed 2026-09-02.** The real cause wasn't name ambiguity: AVP406486's extracted `insured_name` is a long formal phrase never contained in how a real question names it, so it never entered scoping at all, leaving the wrong document (BW240599) to win by default. `find_relevant_source_files` (`main.py`) now also matches `insurance_type` as an independent signal, plus narrows genuine insured-name collisions by `insurance_type` rather than guessing. Verified live against the golden-set case; promoted from `known_limitation` to `structured_fact` in `backend/tests/golden_set.py`. **Accepted residual trade-off:** the fix broadens scope to both candidate documents rather than guessing one — the correct document is now found and answered from correctly, but ranks 2nd (not 1st) among sources since BW240599's chunk embeds marginally closer to this question's exact wording. Fixing that too would need reranking or structured-field-aware scoring; not being chased now. See `test_mean_reciprocal_rank`'s updated floor (0.75, down from 0.8) for the measured impact.
-- The oversized-PDF document (`25-26 Group Accident Policy 100013386.pdf`, already noted as a metadata-extraction failure in Milestone 2) doesn't surface in top-5 semantic search for an on-topic question about its own content, and the LLM hallucinates a confident wrong attribution instead of stating it doesn't know. Worse than previously documented — tracked as `xfail` in the same test file.
+- Entity-scoped filtering (`find_relevant_source_files`, `main.py`, ADR-0004) matches on policy number, insured name, insurer, or insurance_type substrings — most real questions name one of those four things and scope correctly (measured precision 0.72-0.79), but a question that only describes a policy some other way still searches unscoped, same as any RAG query without metadata filtering.
+- Retrieval occasionally misses the expected document within the tuned `top_k=2` window — measured hit rate 10/12 (83%) consistently, but *which* 1-2 of the 12 structured-fact cases miss varies run to run (seen so far: the Property/Umbrella pair, and separately the Crime/Medical-Malpractice pair), consistent with ordinary embedding-ranking noise at a tight window rather than one specific document having a persistent problem. Re-sweep `top_k` (ADR-0011) if this pattern starts consistently naming the same document.
+- The old Milestone 2/3 known gap about an oversized placeholder PDF (`25-26 Group Accident Policy 100013386.pdf`) hallucinating a wrong attribution no longer applies — that document isn't part of the real data set. The real set's closest analog (the Excess Side A D&O extraction gap, Milestone 2 known gaps above) was live-verified 2026-09-08 to **not** reproduce that failure: it retrieves correctly and the LLM declines rather than guessing.
 
 #### Milestone 4: Quality & Evaluation — 🟡 In progress
 - [x] Evaluation metrics (relevance, accuracy, latency) — `backend/tests/test_quality.py`: hit rate, MRR, precision@k, structured-fact answer correctness, latency percentiles
@@ -171,8 +177,8 @@ Deliverable: quality dashboard with KPIs.
 
 Deliverable: feature-rich RAG system.
 
-#### Milestone 6: Production Deployment — ⬜ Not started
-- [ ] API hardening (rate limiting, auth)
+#### Milestone 6: Production Deployment — 🟡 In progress
+- [x] API hardening (rate limiting, auth) — shared-secret `X-API-Key` header (`API_KEYS` env var, comma-separated) gates every endpoint except `/` and `/health`; unset disables auth with a startup warning, so local dev without a `.env` still works but nothing non-local can silently ship unauthenticated. Per-key rate limiting via `slowapi` (`backend/main.py`), keyed by the API key (falls back to remote address when auth is disabled): 20/min on `/query`, 5/min on `/extract`, 30/min on `/feedback` and `/search/metadata`, 100/min default elsewhere. Limits are untuned starting defaults, same honesty as `top_k`/`MIN_RETRIEVAL_SCORE`. The Streamlit frontend (`frontend/app.py`) sends the same key via `API_KEY` in its own `.env`. Not yet done: TLS termination and locking down CORS (`allow_origins=["*"]`) — left for actual deployment, since there's no real origin to restrict to yet.
 - [ ] Database persistence (PostgreSQL)
 - [ ] Caching layer (Redis)
 - [ ] Load testing & scaling

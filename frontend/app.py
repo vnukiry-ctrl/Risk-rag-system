@@ -1,7 +1,11 @@
+import os
 import streamlit as st
 import requests
 import pandas as pd
 from datetime import datetime
+from dotenv import load_dotenv
+
+load_dotenv()
 
 st.set_page_config(
     page_title="Insurance RAG System",
@@ -11,6 +15,12 @@ st.set_page_config(
 )
 
 API_BASE_URL = "http://localhost:8000"
+# DECISION (UNIVERSAL, Milestone 6.1): matches backend/main.py's API_KEYS --
+# the frontend is just another caller and authenticates the same way. Empty
+# when unset, same as the backend's "no API_KEYS configured" dev-mode default,
+# so a local backend running without auth still works with no extra setup.
+API_KEY = os.getenv("API_KEY", "")
+API_HEADERS = {"X-API-Key": API_KEY} if API_KEY else {}
 
 st.sidebar.title("🏢 Insurance RAG System")
 st.sidebar.markdown("---")
@@ -41,7 +51,7 @@ if page == "🏠 Home":
     if st.button("📥 Extract Documents", key="extract_home"):
         with st.spinner("Extracting..."):
             try:
-                response = requests.post(f"{API_BASE_URL}/extract")
+                response = requests.post(f"{API_BASE_URL}/extract", headers=API_HEADERS)
                 if response.status_code == 200:
                     data = response.json()
                     st.success(f"✅ Extracted {len(data)} documents!")
@@ -62,7 +72,7 @@ elif page == "📄 Documents":
             st.rerun()
     
     try:
-        response = requests.get(f"{API_BASE_URL}/documents")
+        response = requests.get(f"{API_BASE_URL}/documents", headers=API_HEADERS)
         if response.status_code == 200:
             docs_data = response.json()
             total = docs_data.get("total", 0)
@@ -115,7 +125,8 @@ elif page == "🔍 Search":
             try:
                 response = requests.post(
                     f"{API_BASE_URL}/search/metadata",
-                    params={"query": search_query, "top_k": top_k}
+                    params={"query": search_query, "top_k": top_k},
+                    headers=API_HEADERS,
                 )
                 if response.status_code == 200:
                     results = response.json().get("results", [])
@@ -157,7 +168,10 @@ elif page == "❓ Ask Questions":
             st.rerun()
 
     question = st.text_area("Ask about insurance documents:")
-    top_k = st.slider("Documents to consider", 1, 10, 5)
+    # Default 2, not 5 -- measured via topk_experiment.py against the real
+    # document set (see ADR-0005): recall/MRR plateau at k=2 and precision
+    # is actually highest there, so a higher default would only add latency.
+    top_k = st.slider("Documents to consider", 1, 10, 2)
 
     if st.button("Get Answer"):
         if not question:
@@ -172,6 +186,7 @@ elif page == "❓ Ask Questions":
                             "top_k": top_k,
                             "session_id": st.session_state.session_id,
                         },
+                        headers=API_HEADERS,
                     )
                     if response.status_code == 200:
                         result = response.json()
@@ -234,6 +249,7 @@ elif page == "❓ Ask Questions":
                                 "variant": turn["variant"],
                                 "low_confidence": turn["low_confidence"],
                             },
+                            headers=API_HEADERS,
                         )
                         st.session_state.turns[idx]["rated"] = "up"
                         st.rerun()
@@ -253,6 +269,7 @@ elif page == "❓ Ask Questions":
                                 "variant": turn["variant"],
                                 "low_confidence": turn["low_confidence"],
                             },
+                            headers=API_HEADERS,
                         )
                         st.session_state.turns[idx]["rated"] = "down"
                         st.rerun()

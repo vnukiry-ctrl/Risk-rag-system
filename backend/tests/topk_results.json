@@ -1,7 +1,278 @@
 {
-  "1": {"hit_rate": 1.00, "mrr": 1.00, "precision": 1.00, "avg_latency": 2.8},
-  "2": {"hit_rate": 1.00, "mrr": 1.00, "precision": 0.90, "avg_latency": 6.0},
-  "3": {"hit_rate": 1.00, "mrr": 1.00, "precision": 0.80, "avg_latency": 12.6},
-  "5": {"hit_rate": 1.00, "mrr": 1.00, "precision": 0.74, "avg_latency": 10.5},
-  "10": {"error": "Groq daily token quota (200,000 TPD) exhausted from cumulative testing this session -- 429 rate_limit_exceeded, not a RAG failure. Retry after quota reset."}
+  "1": {
+    "hit_rate": 0.75,
+    "mrr": 0.75,
+    "precision": 0.75,
+    "avg_latency": 2.928420901298523,
+    "per_case": [
+      {
+        "question": "What is the deductible for Employee Dishonesty coverage under the Mount Royal University crime protection policy?",
+        "hit": false,
+        "rr": 0.0,
+        "precision": 0.0,
+        "latency": 2.980067729949951
+      },
+      {
+        "question": "What is the Third Party Liability limit under the garage automobile policy ALCOG108?",
+        "hit": false,
+        "rr": 0.0,
+        "precision": 0.0,
+        "latency": 3.1629109382629395
+      },
+      {
+        "question": "What is the 2026-2027 renewal premium for automobile policy ALCOA108?",
+        "hit": true,
+        "rr": 1.0,
+        "precision": 1.0,
+        "latency": 2.9934637546539307
+      },
+      {
+        "question": "What is the shared limit of insurance under the Definity D&O/EPL package policy 1000013292?",
+        "hit": true,
+        "rr": 1.0,
+        "precision": 1.0,
+        "latency": 3.11625599861145
+      },
+      {
+        "question": "What is the deductible per loss under the errors and omissions liability policy SRD677452?",
+        "hit": true,
+        "rr": 1.0,
+        "precision": 1.0,
+        "latency": 2.7629010677337646
+      },
+      {
+        "question": "What is the limit of insurance per occurrence under the Fine Arts policy CAA0000558SP26A?",
+        "hit": true,
+        "rr": 1.0,
+        "precision": 1.0,
+        "latency": 2.8894779682159424
+      },
+      {
+        "question": "What is the general aggregate limit under the Commercial General Liability policy for the Mount Royal University User Group program?",
+        "hit": true,
+        "rr": 1.0,
+        "precision": 1.0,
+        "latency": 2.928663492202759
+      },
+      {
+        "question": "What is the limit of liability for the excess liability policy SPRGL2602187?",
+        "hit": true,
+        "rr": 1.0,
+        "precision": 1.0,
+        "latency": 2.960545778274536
+      },
+      {
+        "question": "What is the Public Liability limit per occurrence under the general liability policy SPRGL2602185?",
+        "hit": true,
+        "rr": 1.0,
+        "precision": 1.0,
+        "latency": 2.9563217163085938
+      },
+      {
+        "question": "What is the annual premium for the medical malpractice policy covering Mount Royal University?",
+        "hit": false,
+        "rr": 0.0,
+        "precision": 0.0,
+        "latency": 2.8757455348968506
+      },
+      {
+        "question": "What is the annual premium for the property policy underwritten by Factory Mutual Insurance Company?",
+        "hit": true,
+        "rr": 1.0,
+        "precision": 1.0,
+        "latency": 2.7455012798309326
+      },
+      {
+        "question": "What is the limit of liability for the umbrella liability policy SPRGL2602186?",
+        "hit": true,
+        "rr": 1.0,
+        "precision": 1.0,
+        "latency": 2.769195556640625
+      }
+    ]
+  },
+  "2": {
+    "hit_rate": 0.8333333333333334,
+    "mrr": 0.7916666666666666,
+    "precision": 0.7916666666666666,
+    "avg_latency": 9.253376642862955,
+    "per_case": [
+      {
+        "question": "What is the deductible for Employee Dishonesty coverage under the Mount Royal University crime protection policy?",
+        "hit": false,
+        "rr": 0.0,
+        "precision": 0.0,
+        "latency": 2.7624175548553467
+      },
+      {
+        "question": "What is the Third Party Liability limit under the garage automobile policy ALCOG108?",
+        "hit": true,
+        "rr": 0.5,
+        "precision": 0.5,
+        "latency": 5.02544093132019
+      },
+      {
+        "question": "What is the 2026-2027 renewal premium for automobile policy ALCOA108?",
+        "hit": true,
+        "rr": 1.0,
+        "precision": 1.0,
+        "latency": 13.424304008483887
+      },
+      {
+        "question": "What is the shared limit of insurance under the Definity D&O/EPL package policy 1000013292?",
+        "hit": true,
+        "rr": 1.0,
+        "precision": 1.0,
+        "latency": 7.486589670181274
+      },
+      {
+        "question": "What is the deductible per loss under the errors and omissions liability policy SRD677452?",
+        "hit": true,
+        "rr": 1.0,
+        "precision": 1.0,
+        "latency": 12.112299919128418
+      },
+      {
+        "question": "What is the limit of insurance per occurrence under the Fine Arts policy CAA0000558SP26A?",
+        "hit": true,
+        "rr": 1.0,
+        "precision": 1.0,
+        "latency": 10.229302644729614
+      },
+      {
+        "question": "What is the general aggregate limit under the Commercial General Liability policy for the Mount Royal University User Group program?",
+        "hit": true,
+        "rr": 1.0,
+        "precision": 1.0,
+        "latency": 10.965570211410522
+      },
+      {
+        "question": "What is the limit of liability for the excess liability policy SPRGL2602187?",
+        "hit": true,
+        "rr": 1.0,
+        "precision": 1.0,
+        "latency": 8.117328405380249
+      },
+      {
+        "question": "What is the Public Liability limit per occurrence under the general liability policy SPRGL2602185?",
+        "hit": true,
+        "rr": 1.0,
+        "precision": 1.0,
+        "latency": 12.083251476287842
+      },
+      {
+        "question": "What is the annual premium for the medical malpractice policy covering Mount Royal University?",
+        "hit": false,
+        "rr": 0.0,
+        "precision": 0.0,
+        "latency": 8.103182315826416
+      },
+      {
+        "question": "What is the annual premium for the property policy underwritten by Factory Mutual Insurance Company?",
+        "hit": true,
+        "rr": 1.0,
+        "precision": 1.0,
+        "latency": 9.874446630477905
+      },
+      {
+        "question": "What is the limit of liability for the umbrella liability policy SPRGL2602186?",
+        "hit": true,
+        "rr": 1.0,
+        "precision": 1.0,
+        "latency": 10.856385946273804
+      }
+    ]
+  },
+  "3": {
+    "hit_rate": 0.8333333333333334,
+    "mrr": 0.7916666666666666,
+    "precision": 0.75,
+    "avg_latency": 13.040627638498941,
+    "per_case": [
+      {
+        "question": "What is the deductible for Employee Dishonesty coverage under the Mount Royal University crime protection policy?",
+        "hit": false,
+        "rr": 0.0,
+        "precision": 0.0,
+        "latency": 13.081546783447266
+      },
+      {
+        "question": "What is the Third Party Liability limit under the garage automobile policy ALCOG108?",
+        "hit": true,
+        "rr": 0.5,
+        "precision": 0.3333333333333333,
+        "latency": 12.069648027420044
+      },
+      {
+        "question": "What is the 2026-2027 renewal premium for automobile policy ALCOA108?",
+        "hit": true,
+        "rr": 1.0,
+        "precision": 1.0,
+        "latency": 15.981335401535034
+      },
+      {
+        "question": "What is the shared limit of insurance under the Definity D&O/EPL package policy 1000013292?",
+        "hit": true,
+        "rr": 1.0,
+        "precision": 1.0,
+        "latency": 12.261563062667847
+      },
+      {
+        "question": "What is the deductible per loss under the errors and omissions liability policy SRD677452?",
+        "hit": true,
+        "rr": 1.0,
+        "precision": 1.0,
+        "latency": 13.919302225112915
+      },
+      {
+        "question": "What is the limit of insurance per occurrence under the Fine Arts policy CAA0000558SP26A?",
+        "hit": true,
+        "rr": 1.0,
+        "precision": 1.0,
+        "latency": 15.086719751358032
+      },
+      {
+        "question": "What is the general aggregate limit under the Commercial General Liability policy for the Mount Royal University User Group program?",
+        "hit": true,
+        "rr": 1.0,
+        "precision": 0.6666666666666666,
+        "latency": 15.266045331954956
+      },
+      {
+        "question": "What is the limit of liability for the excess liability policy SPRGL2602187?",
+        "hit": true,
+        "rr": 1.0,
+        "precision": 1.0,
+        "latency": 11.515819787979126
+      },
+      {
+        "question": "What is the Public Liability limit per occurrence under the general liability policy SPRGL2602185?",
+        "hit": true,
+        "rr": 1.0,
+        "precision": 1.0,
+        "latency": 17.292731761932373
+      },
+      {
+        "question": "What is the annual premium for the medical malpractice policy covering Mount Royal University?",
+        "hit": false,
+        "rr": 0.0,
+        "precision": 0.0,
+        "latency": 12.260350227355957
+      },
+      {
+        "question": "What is the annual premium for the property policy underwritten by Factory Mutual Insurance Company?",
+        "hit": true,
+        "rr": 1.0,
+        "precision": 1.0,
+        "latency": 13.875692367553711
+      },
+      {
+        "question": "What is the limit of liability for the umbrella liability policy SPRGL2602186?",
+        "hit": true,
+        "rr": 1.0,
+        "precision": 1.0,
+        "latency": 3.876776933670044
+      }
+    ]
+  }
 }

@@ -179,7 +179,7 @@ def index_documents(
     return len(points)
 
 
-def semantic_search(query: str, top_k: int = 5, source_files: List[str] = None) -> List[Dict]:
+def semantic_search(query: str, top_k: int = 2, source_files: List[str] = None) -> List[Dict]:
     """Embed the query, match against child chunks, and return each match's parent text.
 
     Matching happens on the small child chunks (precise embeddings), but the

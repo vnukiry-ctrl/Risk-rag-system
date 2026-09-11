@@ -33,8 +33,10 @@ What this makes easier, what it makes harder, and what would need to be true to 
 | [0002](0002-parent-child-chunking-strategy.md) | Parent-child chunking, size-based splitting | Accepted |
 | [0003](0003-general-purpose-embedding-model.md) | Ollama `nomic-embed-text`, general-purpose embeddings | Accepted (provisional) |
 | [0004](0004-entity-scoped-retrieval-filtering.md) | Filter retrieval to named policy/insurer when the question names one | Accepted |
-| [0005](0005-defer-top-k-and-context-budget-tuning.md) | Defer top-k and context-budget tuning | Deferred |
+| [0005](0005-defer-top-k-and-context-budget-tuning.md) | Defer top-k and context-budget tuning | Top-k superseded by 0011; context-budget still deferred |
 | [0006](0006-defer-ab-testing-framework.md) | Defer A/B testing framework | Deferred |
 | [0007](0007-ab-mechanism-built-not-activated.md) | A/B testing mechanism built, not activated | Accepted (mechanism only) |
 | [0008](0008-history-aware-query-condensation.md) | History-aware query condensation before retrieval | Accepted |
 | [0009](0009-retrieval-confidence-gating.md) | Retrieval-confidence gating before answering | Accepted (threshold untuned) |
+| [0010](0010-api-key-auth-and-rate-limiting.md) | Shared API-key auth and per-key rate limiting | Accepted |
+| [0011](0011-topk-tuned-from-real-data.md) | Top-k tuned from real data (k=5 -> k=2) | Accepted |

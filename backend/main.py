@@ -3,9 +3,14 @@ import os
 import time
 import uuid
 from collections import deque
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request, Security
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.util import get_remote_address
 from starlette.concurrency import run_in_threadpool
 from typing import Dict, List, Optional
 from insurance_loader import load_insurance_documents
@@ -38,6 +43,49 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# DECISION (UNIVERSAL, Milestone 6.1): shared-secret API key(s) via env var,
+# not per-user accounts -- this is a single-deployment internal tool, not a
+# multi-tenant product, so a lightweight gate is proportionate to the risk.
+# Comma-separate API_KEYS to hand out more than one (e.g. frontend + a
+# script) without them sharing a secret or needing a rotation that breaks
+# the other caller. An unset API_KEYS is treated as "auth disabled" rather
+# than refused at startup, so local dev without a .env still works -- but
+# that means any non-local deployment MUST set it, which the warning below
+# exists to make impossible to miss.
+API_KEYS = {k.strip() for k in os.getenv("API_KEYS", "").split(",") if k.strip()}
+if not API_KEYS:
+    logger.warning(
+        "No API_KEYS configured -- all endpoints are running WITHOUT authentication. "
+        "Set API_KEYS (comma-separated) in .env before deploying anywhere but localhost."
+    )
+
+_api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+def require_api_key(key: Optional[str] = Security(_api_key_header)) -> None:
+    if not API_KEYS:
+        return
+    if key not in API_KEYS:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+
+# DECISION (UNIVERSAL, Milestone 6.1): rate limits are keyed by API key when
+# one is present, falling back to remote address only for the unauthenticated
+# (no API_KEYS configured) case -- so quota is per caller, not per NAT/proxy
+# IP shared by many callers behind it. Limits below are untuned starting
+# defaults (same honesty as top_k/MIN_RETRIEVAL_SCORE elsewhere in this
+# file): /query and /extract both fan out to external services (Groq, the
+# embedding backend) and are the ones actually worth protecting; the default
+# covers everything else so no route is ever fully unbounded.
+def _rate_limit_key(request: Request) -> str:
+    return request.headers.get("X-API-Key") or get_remote_address(request)
+
+
+limiter = Limiter(key_func=_rate_limit_key, default_limits=["100/minute"])
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 documents_db = load_documents()
 
@@ -76,11 +124,16 @@ CONTEXT_CHAR_BUDGET = 24000
 
 class QueryRequest(BaseModel):
     question: str
-    # DECISION (UNIVERSAL): 5 is an untuned default carried over from Milestone
-    # 2, not a measured value -- tune it against a golden eval set (known
-    # question -> correct-answer pairs) for whatever documents the new
-    # project actually has, rather than reusing this number.
-    top_k: int = 5
+    # DECISION (UNIVERSAL, Milestone 2 tuning closed out 2026-09-11, ADR-0005):
+    # measured, not guessed -- topk_experiment.py swept k=1,2,3,5 against the
+    # real 16-document golden set. Recall (hit rate 0.83) and MRR (0.79) both
+    # plateau starting at k=2 and don't improve at k=3 or k=5; precision is
+    # actually highest at k=2 (0.79, vs 0.75 at k=3 and 0.72 at k=5, since
+    # larger k just adds more non-matching padding chunks); latency roughly
+    # triples from k=2 to k=3 (~9s -> ~13s) since the LLM prompt grows with
+    # every extra retrieved chunk. k=1 loses real recall (0.75). k=2 is the
+    # elbow on every axis at once -- not a compromise between them.
+    top_k: int = 2
     # DECISION (UNIVERSAL, mechanism built ahead of use -- see ADR-0006/0007):
     # None preserves today's exact behavior (top_k above, temperature=0
     # below). Naming a variant from experiments.VARIANTS overrides both for
@@ -237,8 +290,9 @@ async def root():
     return {"status": "alive", "service": "Insurance RAG System"}
 
 
-@app.post("/extract")
-async def extract_documents():
+@app.post("/extract", dependencies=[Depends(require_api_key)])
+@limiter.limit("5/minute")
+async def extract_documents(request: Request):
     # DECISION (UNIVERSAL): load_insurance_documents() is fully synchronous,
     # blocking I/O (disk reads, LLM calls per document). Calling it directly
     # inside this async def would block FastAPI's single-threaded event loop
@@ -287,7 +341,7 @@ async def extract_documents():
     }
 
 
-@app.get("/documents")
+@app.get("/documents", dependencies=[Depends(require_api_key)])
 async def list_documents():
     return {"total": len(documents_db), "documents": list(documents_db.values())}
 
@@ -297,8 +351,9 @@ async def health_check():
     return {"status": "healthy", "documents_loaded": len(documents_db)}
 
 
-@app.post("/search/metadata")
-async def search_documents_metadata(query: str, top_k: int = 5):
+@app.post("/search/metadata", dependencies=[Depends(require_api_key)])
+@limiter.limit("30/minute")
+async def search_documents_metadata(request: Request, query: str, top_k: int = 5):
     """Keyword substring match over extracted structured fields (policy #, insurer, etc.).
 
     Not semantic search -- for vector-based retrieval over document content, use /query.
@@ -333,36 +388,37 @@ async def search_documents_metadata(query: str, top_k: int = 5):
     return {"query": query, "total": len(matches[:top_k]), "results": matches[:top_k]}
 
 
-@app.post("/query")
-async def query_documents(request: QueryRequest):
-    if not request.question:
+@app.post("/query", dependencies=[Depends(require_api_key)])
+@limiter.limit("20/minute")
+async def query_documents(request: Request, body: QueryRequest):
+    if not body.question:
         raise HTTPException(status_code=400, detail="question required")
 
-    variant_config = get_variant(request.variant)
-    effective_top_k = variant_config["top_k"] if variant_config else request.top_k
+    variant_config = get_variant(body.variant)
+    effective_top_k = variant_config["top_k"] if variant_config else body.top_k
     effective_temperature = variant_config["temperature"] if variant_config else 0
 
-    session_id = request.session_id or str(uuid.uuid4())
+    session_id = body.session_id or str(uuid.uuid4())
     history = sessions_db.get(session_id, deque(maxlen=MAX_HISTORY_TURNS))
 
     logger.info(
         "Query received: %r (top_k=%d, variant=%s, session=%s, history_turns=%d)",
-        request.question, effective_top_k, request.variant, session_id, len(history),
+        body.question, effective_top_k, body.variant, session_id, len(history),
     )
     start_time = time.time()
 
     try:
         # DECISION (UNIVERSAL, Milestone 5.3, ADR-0008): retrieval runs against
-        # search_query (condensed when history exists), not request.question,
+        # search_query (condensed when history exists), not body.question,
         # so a follow-up like "what about its deductible?" resolves the
         # pronoun before embedding/entity-matching. The answer prompt below
-        # still uses request.question -- the user's original phrasing -- so
+        # still uses body.question -- the user's original phrasing -- so
         # the reply reads naturally rather than echoing the rewrite.
-        search_query = request.question
+        search_query = body.question
         if history:
-            search_query = await run_in_threadpool(condense_query, request.question, history)
-            if search_query != request.question:
-                logger.info("Condensed query: %r -> %r", request.question, search_query)
+            search_query = await run_in_threadpool(condense_query, body.question, history)
+            if search_query != body.question:
+                logger.info("Condensed query: %r -> %r", body.question, search_query)
 
         source_files = find_relevant_source_files(search_query)
         if source_files:
@@ -388,7 +444,7 @@ async def query_documents(request: QueryRequest):
             best_score = max(c["score"] for c in chunks)
             logger.warning(
                 "Low-confidence retrieval for %r: best score %.3f < %.2f threshold, refusing to answer",
-                request.question, best_score, MIN_RETRIEVAL_SCORE,
+                body.question, best_score, MIN_RETRIEVAL_SCORE,
             )
             answer = (
                 "I don't have enough relevant information in the indexed documents to "
@@ -400,11 +456,11 @@ async def query_documents(request: QueryRequest):
                 {"source_file": c["source_file"], "policy_number": c.get("policy_number"), "score": c["score"]}
                 for c in chunks
             ]
-            history.append({"question": request.question, "answer": answer})
+            history.append({"question": body.question, "answer": answer})
             sessions_db[session_id] = history
             log_experiment_result(
-                variant=request.variant,
-                question=request.question,
+                variant=body.variant,
+                question=body.question,
                 top_k=effective_top_k,
                 temperature=effective_temperature,
                 sources=sources,
@@ -413,7 +469,7 @@ async def query_documents(request: QueryRequest):
                 low_confidence=True,
             )
             return {
-                "question": request.question,
+                "question": body.question,
                 "answer": answer,
                 "sources": sources,
                 "chunks_searched": len(chunks),
@@ -490,7 +546,7 @@ async def query_documents(request: QueryRequest):
         else:
             context = "No relevant document excerpts found. Please run /extract first if you haven't."
 
-        prompt = f"{context}\n\nUser Question: {request.question}\n\nProvide a clear, accurate answer using the summary and excerpts above. Prefer the structured policy summary for simple facts like limits, premiums, and dates. If the answer is not covered, say so."
+        prompt = f"{context}\n\nUser Question: {body.question}\n\nProvide a clear, accurate answer using the summary and excerpts above. Prefer the structured policy summary for simple facts like limits, premiums, and dates. If the answer is not covered, say so."
 
         # DECISION (UNIVERSAL, Milestone 5.2): prior turns are replayed as
         # real user/assistant messages, not flattened into the prompt string
@@ -530,14 +586,14 @@ async def query_documents(request: QueryRequest):
 
         sources = [{"source_file": c["source_file"], "policy_number": c.get("policy_number"), "score": c["score"]} for c in chunks]
 
-        history.append({"question": request.question, "answer": answer})
+        history.append({"question": body.question, "answer": answer})
         sessions_db[session_id] = history
 
         logger.info("Query answered using %d chunks", len(chunks))
 
         log_experiment_result(
-            variant=request.variant,
-            question=request.question,
+            variant=body.variant,
+            question=body.question,
             top_k=effective_top_k,
             temperature=effective_temperature,
             sources=sources,
@@ -547,7 +603,7 @@ async def query_documents(request: QueryRequest):
         )
 
         return {
-            "question": request.question,
+            "question": body.question,
             "answer": answer,
             "sources": sources,
             "chunks_searched": len(chunks),
@@ -559,23 +615,24 @@ async def query_documents(request: QueryRequest):
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
 
-@app.post("/feedback")
-async def submit_feedback(request: FeedbackRequest):
+@app.post("/feedback", dependencies=[Depends(require_api_key)])
+@limiter.limit("30/minute")
+async def submit_feedback(request: Request, body: FeedbackRequest):
     """Record a thumbs up/down (plus optional comment) on a previously
     returned answer -- see feedback_store.py for why this is a durable file,
     not in-memory state like documents_db."""
-    if request.rating not in ("up", "down"):
+    if body.rating not in ("up", "down"):
         raise HTTPException(status_code=400, detail="rating must be 'up' or 'down'")
 
     entry = record_feedback(
-        question=request.question,
-        answer=request.answer,
-        rating=request.rating,
-        comment=request.comment,
-        sources=request.sources,
-        session_id=request.session_id,
-        variant=request.variant,
-        low_confidence=request.low_confidence,
+        question=body.question,
+        answer=body.answer,
+        rating=body.rating,
+        comment=body.comment,
+        sources=body.sources,
+        session_id=body.session_id,
+        variant=body.variant,
+        low_confidence=body.low_confidence,
     )
     return {"status": "recorded", "entry": entry}
 

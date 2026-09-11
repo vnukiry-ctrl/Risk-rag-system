@@ -19,11 +19,13 @@ Run with: pytest tests/ -v   (from backend/, with the API already running --
 see conftest.py for why this suite talks to HTTP instead of importing
 vector_store directly).
 """
+import os
 import statistics
 import time
 
 import pytest
 import requests
+from dotenv import load_dotenv
 
 from golden_set import GOLDEN_SET
 
@@ -32,6 +34,14 @@ from golden_set import GOLDEN_SET
 pytestmark = pytest.mark.usefixtures("require_running_backend")
 
 BASE_URL = "http://127.0.0.1:8000"
+
+# ADR-0010 (Milestone 6.1) added API-key auth to every endpoint except /
+# and /health -- this suite calls /query, so it needs a key too now. Reuses
+# whichever key the backend itself is running with (same .env, first entry
+# of the comma-separated list) rather than hardcoding a second one.
+load_dotenv()
+_API_KEY = os.getenv("API_KEYS", "").split(",")[0].strip()
+_AUTH_HEADERS = {"X-API-Key": _API_KEY} if _API_KEY else {}
 
 
 def reciprocal_rank(sources, expected_policy):
@@ -57,17 +67,19 @@ def precision_at_k(sources, expected_policy):
     chunks retrieved for context aren't "wrong," just not the answer chunk).
     Entity-scoped filtering (ADR-0004, main.py's find_relevant_source_files)
     restricts search to the matched document and pushes precision toward
-    1.0 -- but ONLY when the question contains a literal policy number,
-    insured name, or insurer name substring. CORRECTED AFTER FIRST REAL RUN:
-    the initial version of this comment claimed every golden-set question
-    triggers scoping; measured precision (0.2 on the "medical professional
-    liability" case) disproved that -- that question names the
-    insurance_type, which find_relevant_source_files() does NOT match on, so
-    it searches unscoped and comes back noisy like any unscoped RAG query.
+    1.0 -- matching on a literal policy number, insured name, insurer name,
+    OR insurance_type substring (the insurance_type path was ADR-0004's own
+    follow-up fix, added after this comment's first version wrongly assumed
+    it wasn't checked -- see that ADR for why). Since almost every real
+    golden-set question names one of those four things, most now scope
+    correctly, which is why measured precision (0.72-0.79 across k=2..5,
+    2026-09-11) sits well above the noisy-unscoped range.
     IDEAL: ~1.0 on questions that name an entity literally; ordinary/noisier
-    (0.2-0.5 is fine) on questions that only describe the insurance_type,
-    since those are never scoped by design today. A drop on an
-    entity-naming question specifically is the real regression signal.
+    (0.2-0.5) is fine on questions that describe a policy without naming any
+    of those four fields, which still search unscoped like any RAG query. A
+    broad drop across many cases, or a drop on a normally-scoped entity-
+    naming question specifically, is the real regression signal -- not the
+    number by itself, since which cases scope depends on question wording.
     """
     if not sources:
         return 0.0
@@ -89,7 +101,11 @@ def query_results():
         start = time.time()
         resp = requests.post(
             f"{BASE_URL}/query",
-            json={"question": case["question"], "top_k": 5},
+            # top_k omitted -- exercises the server's own default (2 as of
+            # ADR-0011), not a value hardcoded here that could silently drift
+            # from what production actually runs.
+            json={"question": case["question"]},
+            headers=_AUTH_HEADERS,
             timeout=60,
         )
         elapsed = time.time() - start
@@ -126,20 +142,19 @@ def test_retrieval_hit_rate(query_results):
 
 
 def test_mean_reciprocal_rank(query_results):
-    """MEASURED FLOOR, not the general 0.8 convention (lowered 2026-09-02,
-    from 0.8): the Mount Royal CGL case (golden_set.py), after the
-    entity-scoping fix, deliberately scopes to *both* candidate documents
-    (AVP406486, the correct one, and BW240599) rather than guessing a single
-    wrong one -- ADR-0004's follow-up fix. Within that scope, BW240599's
-    chunk embeds marginally closer to this specific question's wording
-    (0.774 vs 0.741) even though AVP406486 is the right policy, so it ranks
-    2nd (RR=0.5), not 1st. That's an accepted trade-off, not a bug: finding
-    the right document at all (this case was a hard miss before the fix) is
-    the win; perfect rank-1 ordering when scope legitimately contains a
-    close semantic near-miss is a separate, harder problem (would need
-    reranking or structured-field-aware scoring) not being chased right now.
-    0.75 is this suite's actual measured result with that case included --
-    a further drop below this specific number is the real regression signal.
+    """MEASURED FLOOR, not the general 0.8 convention -- rebuilt 2026-09-11
+    against the real 16-document golden set (see golden_set.py's own header
+    for what this replaced). Measured MRR has landed at 0.79 in every run so
+    far, at both the old top_k=5 default and the new k=2 default (ADR-0011):
+    hit rate is consistently 10/12 (83%) on the 12 structured-fact cases, but
+    WHICH 1-2 cases miss the top-k window varies between runs (seen so far:
+    the Property/Umbrella pair once, the Crime/Medical-Malpractice pair
+    another time) -- consistent with ordinary embedding-ranking noise at a
+    tight top-k window landing on different borderline cases each time,
+    rather than one specific named document having a persistent problem.
+    0.75 leaves headroom below the consistently-measured 0.79 -- a further
+    drop below that is the real regression signal, not the run-to-run
+    variance in which case misses.
     """
     cases = _structured_fact_results(query_results)
     rrs = [reciprocal_rank(r["response"].get("sources", []), r["case"]["expected_policy"]) for r in cases]
@@ -197,77 +212,49 @@ def test_latency_percentiles(query_results):
     metric this replaces (perf_smoke_test.py's avg/min/max) can't tell "one
     query" from "consistently a bit slow."
     ASPIRATIONAL UX IDEAL vs. MEASURED REALITY: general UX guidance would
-    target p50 < 3s, p95 < 6s for a synchronous Q&A endpoint. The first real
-    run of this suite measured p50 ~13s / p95 ~21s instead -- dominated by
-    the Groq LLM call (cloud round-trip, max_tokens=500) plus local Ollama
-    embedding. The floor below is set from THAT measurement, not the
-    aspirational target, on purpose: an assert should catch a regression
-    from today's real baseline, not fail every run against a number nobody
-    has hit yet. Tightening it is future work (shorter max_tokens, streaming,
-    a faster model) -- a separate decision from "does this suite work."
+    target p50 < 3s, p95 < 6s for a synchronous Q&A endpoint. Against the old
+    top_k=5 default (9 placeholder documents), this suite measured p50 ~13s /
+    p95 ~21s -- dominated by the Groq LLM call (cloud round-trip,
+    max_tokens=500) plus local Ollama embedding.
+    UPDATED 2026-09-11 (ADR-0011): top_k's default dropped 5 -> 2 after
+    measuring against the real 16-document set -- fewer retrieved chunks
+    means a smaller prompt, which `topk_experiment.py`'s sweep measured at
+    avg ~9.3s per query (12 structured-fact cases, k=2). The floors below are
+    set looser than that single average, not tighter, since this suite runs
+    all 14 cases (including the 2 known_limitation ones the sweep didn't
+    cover) and a full pytest pass at the new default hadn't been re-run to
+    confirm an exact p50/p95 before this change landed -- Groq's daily quota
+    ran out for the day during the same tuning work that produced the 9.3s
+    number. Tighten these once a real run confirms tighter numbers hold.
     NOT GOOD: any new failure here means a real regression from the measured
     baseline, not proof the system is slow in general -- it already was.
-    CAVEAT: with only 7 samples, this p95 is illustrative, not a trustworthy
+    CAVEAT: with only 14 samples, this p95 is illustrative, not a trustworthy
     tail estimate -- a real p95 needs hundreds of samples (production
     traffic), which is exactly the kind of number this suite can't produce
-    yet at 9 documents and no live users.
+    yet at 16 documents and no live users.
     """
     latencies = sorted(r["elapsed"] for r in query_results)
     p50 = statistics.median(latencies)
     p95 = statistics.quantiles(latencies, n=20)[18] if len(latencies) >= 2 else latencies[0]
     print(f"\nLatency  p50: {p50:.2f}s  p95: {p95:.2f}s  min: {latencies[0]:.2f}s  max: {latencies[-1]:.2f}s")
-    assert p50 < 18, f"p50 latency {p50:.2f}s exceeds the 18s regression floor (measured baseline: ~13s)"
-    assert p95 < 28, f"p95 latency {p95:.2f}s exceeds the 28s regression floor (measured baseline: ~21s)"
+    assert p50 < 15, f"p50 latency {p50:.2f}s exceeds the 15s regression floor (k=2 sweep averaged ~9.3s)"
+    assert p95 < 20, f"p95 latency {p95:.2f}s exceeds the 20s regression floor (provisional, not yet confirmed by a full run at k=2)"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="MIN_RETRIEVAL_SCORE=0.5 can't tell this case apart from a real match -- "
-           "the wrong-document (BW240599) hit scores ~0.72, inside the same 0.71-0.76 "
-           "band ADR-0004 measured for genuinely-correct matches, so a single similarity "
-           "floor can't gate on this without also rejecting legitimate answers. See "
-           "ADR-0009 Consequences (verified 2026-09-02) for the live-run result.",
-)
-def test_hallucination_gate_group_accident(query_results):
-    """Milestone 5.4 (ADR-0009): the low-confidence case must not silently
-    misattribute coverage to the wrong policy.
-
-    Unlike the xfail test below (which checks whether the real document
-    becomes retrievable), this checks the other half of the same bug: even
-    while the document stays unretrievable, the system must not confidently
-    answer from the wrong one. Two outcomes are acceptable -- retrieval
-    already finds the real document, or the confidence gate (main.py,
-    MIN_RETRIEVAL_SCORE) refuses to answer -- everything else means a
-    confidently wrong answer slipped through.
-
-    If this starts passing, either the document became retrievable (see the
-    xfail below) or a smarter gate (reranking, per-document score margin,
-    LLM self-consistency) replaced the flat score floor -- remove this xfail
-    and note which one in ADR-0009.
-    """
-    case = next(r for r in query_results if "Group Accident" in r["case"]["question"])
-    response = case["response"]
-    retrieved_files = {s.get("source_file") for s in response.get("sources", [])}
-    found_real_doc = "25-26 Group Accident Policy 100013386.pdf" in retrieved_files
-    refused = response.get("low_confidence") is True
-    assert found_real_doc or refused, (
-        "neither retrieved the real document nor refused on low confidence -- got a "
-        f"confident answer sourced from the wrong policy: {response.get('answer', '')[:200]!r}"
-    )
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason="Group Accident policy (100013386.pdf) doesn't surface in top-5 for an "
-           "on-topic query, and the LLM hallucinates a wrong attribution instead of "
-           "saying not found -- see golden_set.py case note",
-)
-def test_known_limitation_group_accident_retrievability(query_results):
-    """If this starts passing, the doc has become retrievable for this
-    question -- promote the case in golden_set.py and separately verify the
-    LLM no longer misattributes coverage to the wrong policy when it is."""
-    case = next(r for r in query_results if "Group Accident" in r["case"]["question"])
-    retrieved_files = {s.get("source_file") for s in case["response"].get("sources", [])}
-    assert "25-26 Group Accident Policy 100013386.pdf" in retrieved_files, (
-        "expected miss: this document isn't being retrieved for its own topic"
-    )
+# REMOVED 2026-09-08 (test_hallucination_gate_group_accident,
+# test_known_limitation_group_accident_retrievability): both were bespoke
+# tests hardcoded to the old placeholder document "25-26 Group Accident
+# Policy 100013386.pdf" (oversized-PDF metadata-extraction failure + top-5
+# retrieval miss + LLM misattribution). That document doesn't exist in the
+# real backend/data/ set golden_set.py now targets, so both tests' `next()`
+# lookups would error outright rather than skip or xfail cleanly.
+#
+# The real set's closest analog -- the Excess Side A D&O policy
+# (01-142-91-44) known_limitation case in golden_set.py -- was live-verified
+# 2026-09-08 to NOT reproduce this bug: it retrieves at rank 1 for its own
+# question, and the LLM correctly declines to state a limit rather than
+# hallucinating one. So there's currently no real case in this document set
+# that needs its own hallucination-gate regression test. If a future
+# document reproduces the old failure shape (unretrievable + confidently
+# wrong), add a new bespoke test the same way these were written, pointed at
+# that document.
