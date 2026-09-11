@@ -1,0 +1,28 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Runtime state -- mounted as volumes in docker-compose.yml, not baked into
+# the image (documents_db.json/qdrant_data are regenerated via /extract;
+# data/ is the user's own documents, not application code).
+data/*.pdf
+data/*.txt
+data/*.docx
+qdrant_data/
+documents_db.json
+feedback_log.jsonl
+experiments_log.jsonl
+
+# Secrets -- passed in via docker-compose's env_file, never copied into the
+# image itself.
+.env
+.env.local
+
+# Stray local debris, not part of the app
+backend.err.log
+backend.out.log
+python
+tests/pytest_out.txt
+tests/topk_run.log

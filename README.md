@@ -41,17 +41,25 @@ Ingests insurance policy PDFs, extracts structured metadata (policy number, insu
 cd backend
 python -m venv venv
 venv\Scripts\activate
-pip install fastapi uvicorn python-dotenv pypdf PyMuPDF qdrant-client langchain-text-splitters requests openai pytest
+pip install -r requirements.txt
 ```
-Also requires [Ollama](https://ollama.com) running locally with the `nomic-embed-text` model pulled (`ollama pull nomic-embed-text`), and a `GROQ_API_KEY` in `backend/.env`.
+Also requires [Ollama](https://ollama.com) running locally with the `nomic-embed-text` model pulled (`ollama pull nomic-embed-text`), [Tesseract OCR](https://github.com/UB-Mannheim/tesseract/wiki) installed and on PATH (image-format documents only — `pip install pytesseract` installs only the Python wrapper, never the binary itself), and a `GROQ_API_KEY` plus `API_KEYS` in `backend/.env` (see `backend/.env.example`; see [ADR-0010](docs/adr/0010-api-key-auth-and-rate-limiting.md) for what `API_KEYS` gates).
 
 ### Frontend
 ```bash
 cd frontend
 python -m venv venv
 venv\Scripts\activate
-pip install streamlit requests
+pip install -r requirements.txt
 ```
+Needs its own `API_KEY` in `frontend/.env` (see `frontend/.env.example`), matching one of the backend's `API_KEYS` entries.
+
+### Docker (optional, Milestone 6.3)
+```bash
+echo {} > backend/documents_db.json   # first run only -- see docker-compose.yml's comment for why
+docker compose up --build
+```
+Runs backend (`:8000`) and frontend (`:8501`) as containers; Qdrant stays embedded inside the backend process (its own deliberate design, not containerized separately) and Ollama stays a host-level dependency (`OLLAMA_BASE_URL` in `docker-compose.yml` points at `host.docker.internal`). `backend/data/`, `backend/qdrant_data/`, and the runtime JSON/JSONL files are bind-mounted so indexed documents and logs persist across container restarts. **Written but not build-verified** — this machine doesn't have Docker installed, so the Dockerfiles/compose config haven't been run end-to-end yet; if a build fails, that's the first thing to check.
 
 ## Learning Guide
 
@@ -182,7 +190,7 @@ Deliverable: feature-rich RAG system.
 - [ ] Database persistence (PostgreSQL)
 - [ ] Caching layer (Redis)
 - [ ] Load testing & scaling
-- [ ] Docker containerization
+- [x] Docker containerization — `backend/Dockerfile`, `frontend/Dockerfile`, `docker-compose.yml`. Backend + frontend are containerized; Qdrant runs embedded inside the backend process rather than as its own service (`vector_store.py`'s existing design, not changed for this), and Ollama stays a host-level dependency reached via `host.docker.internal`, matching the project's existing local-dev posture rather than adding a new service. `backend/requirements.txt` was populated for the first time as part of this (previously empty — the README's manual `pip install` line, now replaced by `pip install -r requirements.txt`, had drifted from what's actually needed); `frontend/requirements.txt` was corrected too — it was missing `pandas` entirely (imported by `app.py`, would have failed a fresh install) and pinned to versions well behind what's actually installed and working. **Not build-verified** — this dev machine doesn't have Docker installed, so nothing here has actually been built and run yet.
 
 Deliverable: production-ready deployment.
 

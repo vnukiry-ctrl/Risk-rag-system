@@ -14,7 +14,10 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-API_BASE_URL = "http://localhost:8000"
+# Overridable for Docker Compose, where "localhost" from inside the frontend
+# container would mean the frontend container itself, not the backend one --
+# compose sets this to the backend service's name (see docker-compose.yml).
+API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
 # DECISION (UNIVERSAL, Milestone 6.1): matches backend/main.py's API_KEYS --
 # the frontend is just another caller and authenticates the same way. Empty
 # when unset, same as the backend's "no API_KEYS configured" dev-mode default,
@@ -279,4 +282,4 @@ elif page == "❓ Ask Questions":
 
 
 st.markdown("---")
-st.markdown("Insurance RAG System | Backend: http://localhost:8000")
+st.markdown(f"Insurance RAG System | Backend: {API_BASE_URL}")

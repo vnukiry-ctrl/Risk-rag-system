@@ -25,7 +25,10 @@ logger = logging.getLogger(__name__)
 # domain-tuned or larger model is the first thing to try if retrieval
 # quality is the bottleneck on a new project, before touching chunk sizes.
 EMBEDDINGS_PROVIDER = "ollama"  # Options: "ollama" or "anthropic"
-OLLAMA_BASE_URL = "http://localhost:11434"
+# Overridable for Docker Compose, where "localhost" from inside the backend
+# container would mean the backend container itself, not the host machine
+# Ollama normally runs on -- compose points this at host.docker.internal.
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_EMBED_MODEL = "nomic-embed-text"
 VECTOR_SIZE = 768  # nomic-embed-text output dimension
 
