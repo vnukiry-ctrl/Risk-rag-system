@@ -19,16 +19,23 @@ EXPERIMENTS_LOG_PATH = os.getenv("EXPERIMENTS_LOG_PATH", os.path.join(BASE_DIR, 
 # happening" -- it isn't, until there's real traffic or a golden set large
 # enough to make a comparison meaningful (ADR-0006's blocker still applies).
 #
-# TODO (pick back up once port 8000 / the backend is running cleanly again --
-# see ADR-0007): this code path has NOT been exercised end-to-end yet. Run
-# one live check: POST /query with {"variant": "wider_retrieval"}, confirm
-# chunks_searched reflects top_k=10, and confirm the call lands in
-# experiments_log.jsonl. Until that check passes, treat this as written-but-
-# unverified, not done.
+# VERIFIED end-to-end 2026-09-14 (ADR-0007's "Update" section): POST /query with
+# {"variant": "wider_retrieval"} confirmed chunks_searched reflected top_k=10
+# and the call landed correctly in experiments_log.jsonl with variant/
+# top_k/temperature all recorded. The mechanism itself works; this does NOT
+# mean a real A/B comparison has been run -- that still needs real traffic
+# or a golden set large enough to draw a conclusion from (ADR-0006's
+# original blocker), which is a separate, still-open thing.
+#
+# "control"'s top_k updated 5 -> 2 (2026-09-14) to track main.py's
+# QueryRequest default after ADR-0011's tuning -- this variant exists so a
+# request can explicitly pin today's baseline behavior even if the default
+# changes again later, so it needs to track the default, not fossilize the
+# old one.
 VARIANTS: Dict[str, Dict] = {
-    "control": {"top_k": 5, "temperature": 0},
+    "control": {"top_k": 2, "temperature": 0},
     "wider_retrieval": {"top_k": 10, "temperature": 0},
-    "higher_temperature": {"top_k": 5, "temperature": 0.3},
+    "higher_temperature": {"top_k": 2, "temperature": 0.3},
 }
 
 

@@ -1,6 +1,6 @@
 # ADR-0007: A/B testing mechanism built, not activated
 
-**Status:** Accepted (mechanism only) — activation remains Deferred per ADR-0006
+**Status:** Accepted, verified end-to-end 2026-09-14 — activation (a real comparison) remains Deferred per ADR-0006
 **Date:** 2026-08-25
 
 ## Context
@@ -33,3 +33,23 @@ usage `feedback_log.jsonl` would have stayed empty and no session ever accumulat
 history — both fixed (session persists in `st.session_state` across turns; 👍/👎 buttons call
 `/feedback`). **The open verification item above is unchanged and still outstanding** — this
 only ensures that once it's run, the data needed to interpret the result is actually captured.
+
+## Update (2026-09-14): verification complete, mechanism confirmed working
+
+Ran the exact check this ADR's Consequences section named as its revisit trigger: `POST /query`
+with `{"variant": "wider_retrieval"}` against the real 16-document set. `chunks_searched` came
+back `10` (confirming `top_k` was actually overridden from the variant config, not the request
+default), and the corresponding `experiments_log.jsonl` entry recorded `variant: "wider_retrieval"`,
+`top_k: 10`, `temperature: 0`, and all 10 sources with their scores. The mechanism itself is
+now verified, not just written.
+
+Also updated `VARIANTS["control"]`'s `top_k` from 5 to 2 to track `main.py`'s `QueryRequest`
+default after [ADR-0011](0011-topk-tuned-from-real-data.md) tuned it — `control` exists to let a
+request explicitly pin today's baseline, so it needs to track the real default rather than
+fossilize the pre-tuning one.
+
+**This does not mean a real A/B comparison has happened** — that's still blocked on ADR-0006's
+original condition (real traffic, or a golden set large enough per variant to be statistically
+meaningful), which this update doesn't change. What's now unblocked is purely mechanical: the
+next time either of those exists, running a comparison is a matter of naming a `variant` on real
+requests and reading `experiments_log.jsonl` — not debugging whether the plumbing works.

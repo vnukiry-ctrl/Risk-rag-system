@@ -38,10 +38,18 @@ Case types (control how test_quality.py scores each one):
 GOLDEN_SET = [
     {
         "question": "What is the deductible for Employee Dishonesty coverage under "
-        "the Mount Royal University crime protection policy?",
+        "crime protection policy SAA E738388 06?",
         "expected_policy": "SAA E738388 06",
         "type": "structured_fact",
         "expected_answer_contains": ["75,000", "75000"],
+        "note": (
+            "Worded with the literal policy number since 2026-09-14, not just "
+            "'the Mount Royal University crime protection policy' -- see the "
+            "medical-malpractice case below for why: insurance_type phrasing is "
+            "not deterministic across LLM extraction runs, so a question that "
+            "only matches on that phrase can silently stop scoping correctly the "
+            "next time /extract runs, with no code change involved."
+        ),
     },
     {
         "question": "What is the Third Party Liability limit under the garage "
@@ -87,8 +95,8 @@ GOLDEN_SET = [
         "expected_answer_contains": ["10,340,731", "10340731"],
     },
     {
-        "question": "What is the general aggregate limit under the Commercial "
-        "General Liability policy for the Mount Royal University User Group program?",
+        "question": "What is the general aggregate limit under Commercial General "
+        "Liability policy AVP406486 for the Mount Royal University User Group program?",
         "expected_policy": "AVP406486",
         "type": "structured_fact",
         "expected_answer_contains": ["5,000,000", "5000000"],
@@ -99,7 +107,11 @@ GOLDEN_SET = [
             "old placeholder pair (AVP406486 vs BW240599). Not yet re-verified "
             "whether the old near-miss ranking behavior recurs here; if MRR looks "
             "off on this case specifically, check for a semantically-close "
-            "unscoped competitor the way the old note described."
+            "unscoped competitor the way the old note described. Policy number "
+            "added to the question text 2026-09-14 for the same "
+            "insurance_type-phrasing-isn't-deterministic reason as the crime "
+            "policy case above -- this one hadn't broken yet, but relied on the "
+            "same fragile match path."
         ),
     },
     {
@@ -116,11 +128,31 @@ GOLDEN_SET = [
         "expected_answer_contains": ["10,000,000", "10000000"],
     },
     {
-        "question": "What is the annual premium for the medical malpractice policy "
-        "covering Mount Royal University?",
+        "question": "What is the annual premium for medical malpractice policy "
+        "26/00008257/00 covering Mount Royal University?",
         "expected_policy": "26/00008257/00",
         "type": "structured_fact",
         "expected_answer_contains": ["11,812.50", "11812.50", "11,812", "11812"],
+        "note": (
+            "Worded with the literal policy number since 2026-09-14 -- a real, "
+            "live-observed regression: this question originally read 'the medical "
+            "malpractice policy covering Mount Royal University' and relied on "
+            "find_relevant_source_files() matching insurance_type='Medical "
+            "Malpractice' as a substring. A later /extract run's own re-extraction "
+            "(non-deterministic LLM output, same document, no code change) "
+            "produced insurance_type='Medical Professional Liability' instead -- "
+            "a semantically equivalent but literally different string, which no "
+            "longer matched. Scoping silently stopped triggering, and unscoped "
+            "search returned the wrong document (Excess Side A D&O) as the top "
+            "match, with the LLM then confidently answering from it instead of "
+            "declining -- worse than a clean miss. Entity-scoped filtering "
+            "(ADR-0004) is thus not just vulnerable to the already-documented "
+            "policy-number key collisions, but to insurance_type phrasing drift "
+            "across separate extraction runs of the *same* document. Naming the "
+            "policy number directly sidesteps it for this question, but doesn't "
+            "fix the underlying fragility -- see docs/adr/0004-entity-scoped-"
+            "retrieval-filtering.md's Consequences for the open follow-up."
+        ),
     },
     {
         "question": "What is the annual premium for the property policy underwritten "

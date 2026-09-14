@@ -99,15 +99,25 @@ documents_db = load_documents()
 MAX_HISTORY_TURNS = 5
 sessions_db = {}
 
-# DECISION (UNIVERSAL, Milestone 5.4, ADR-0009): 0.5 is an untuned starting
-# default, not a measured value -- same honesty as MAX_HISTORY_TURNS and
-# top_k above. ADR-0004 measured genuinely-topical-but-wrong-document
-# matches clustering at 0.71-0.76 (cosine, Qdrant), so this floor sits below
-# that range deliberately: it's meant to catch retrieval that found nothing
-# even loosely on-topic (the oversized-PDF case), not to second-guess a
-# borderline-but-real match. Recalibrate against real queries once a larger
-# golden eval set exists (see ADR-0005's same deferred-tuning stance).
-MIN_RETRIEVAL_SCORE = 0.5
+# DECISION (UNIVERSAL, Milestone 5.4/3, ADR-0009 update 2026-09-14): measured
+# against real queries, not guessed -- 95 real golden-set questions (logged
+# in experiments_log.jsonl) never scored below 0.686, while five deliberately
+# off-topic probes ("what's the capital of France?", "how do I bake a
+# chocolate cake?", a laptop-warranty question) scored 0.448-0.626, all
+# comfortably below that real floor. 0.6 sits with real margin (0.086) under
+# the measured legitimate minimum while catching those clearly-unrelated
+# cases the old 0.5 let straight through (capital-of-France scored 0.563 --
+# above the old floor). NOT fixed by this or any score-only floor: two
+# insurance-domain-adjacent-but-uncovered probes (flood insurance on a
+# personal home, marine cargo) scored 0.699 and 0.73 -- inside the real
+# legitimate range, because they share genuine insurance vocabulary with
+# real matches. No single cosine-similarity floor can separate "covered
+# topic" from "insurance-shaped but not in these documents" when the
+# wording genuinely overlaps; the LLM's own "not stated in these documents"
+# instruction is already doing that job correctly (verified live for all
+# three off-topic probes, not just the two edge cases) and isn't something
+# this gate needs to duplicate.
+MIN_RETRIEVAL_SCORE = 0.6
 
 # DECISION (UNIVERSAL, readiness for real data): 24000 chars (~6k tokens at
 # the common ~4-chars/token English-text approximation -- no tokenizer

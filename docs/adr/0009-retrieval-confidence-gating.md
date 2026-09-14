@@ -1,6 +1,6 @@
 # ADR-0009: Retrieval-confidence gating before answering
 
-**Status:** Accepted (mechanism built; does not catch the reproduction case it targeted, see Consequences)
+**Status:** Accepted; threshold measured and raised 2026-09-14 (0.5 -> 0.6, see Update below) — still does not catch the reproduction case it originally targeted (vocabulary-overlapping wrong-document matches), see Consequences
 **Date:** 2026-08-27
 
 ## Context
@@ -66,3 +66,32 @@ irrelevant. Implemented inline in `/query` (`main.py`), right after `semantic_se
   currently exist. Watch for false refusals (a genuinely answerable question scoring just
   under 0.5) as more documents are added — that's the signal to revisit the number, not a
   guess made in advance of evidence.
+
+## Update (2026-09-14): threshold measured and raised, 0.5 -> 0.6
+
+The deferred-tuning trigger above ("real score distributions ... across more documents and
+questions") is now satisfied: 95 real logged queries against the golden set (`experiments_log.jsonl`)
+never scored below 0.686. Five deliberately off-topic probes were run to get real negative
+examples for the first time -- "what's the capital of France?" (0.563), "how do I bake a
+chocolate cake?" (0.448), a laptop-warranty question (0.626), plus two insurance-domain-adjacent-
+but-uncovered questions: flood insurance on a personal home (0.699) and marine cargo insurance
+(0.73).
+
+**0.6 catches the three clearly-unrelated probes** (all scored 0.448-0.626, below the new
+floor) **with real margin (0.086) under the measured legitimate minimum** (0.686) -- no risk to
+any real match observed so far. **It does NOT catch the two domain-adjacent probes** (0.699,
+0.73) -- both score inside the real legitimate range, because "flood insurance" and "marine
+cargo insurance" share genuine insurance vocabulary with the real documents' content. This
+confirms the same conclusion this ADR already reached for the Group Accident case, now shown to
+be general rather than specific to that one document: **no single cosine-similarity floor can
+separate "covered topic" from "insurance-shaped but not in these documents" once the wording
+genuinely overlaps.** What already handles that overlap correctly, verified live for all three
+off-topic probes and not just the two edge cases: the LLM's own "not stated in these documents"
+grounding instruction. The gate and the grounding instruction are doing two different jobs --
+the gate now catches obviously-nonsense queries before they cost an LLM call at all, and the
+grounding instruction catches the harder, vocabulary-overlapping case the gate structurally
+can't.
+
+Same real-data method used for `top_k` in [ADR-0011](0011-topk-tuned-from-real-data.md) -- see
+that ADR for how `MIN_RETRIEVAL_SCORE` and `top_k` were tuned as separate, sequential
+measurements rather than a single combined sweep.

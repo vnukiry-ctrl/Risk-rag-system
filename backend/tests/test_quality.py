@@ -219,15 +219,20 @@ def test_latency_percentiles(query_results):
     UPDATED 2026-09-11 (ADR-0011): top_k's default dropped 5 -> 2 after
     measuring against the real 16-document set -- fewer retrieved chunks
     means a smaller prompt, which `topk_experiment.py`'s sweep measured at
-    avg ~9.3s per query (12 structured-fact cases, k=2). The floors below are
-    set looser than that single average, not tighter, since this suite runs
-    all 14 cases (including the 2 known_limitation ones the sweep didn't
-    cover) and a full pytest pass at the new default hadn't been re-run to
-    confirm an exact p50/p95 before this change landed -- Groq's daily quota
-    ran out for the day during the same tuning work that produced the 9.3s
-    number. Tighten these once a real run confirms tighter numbers hold.
-    NOT GOOD: any new failure here means a real regression from the measured
-    baseline, not proof the system is slow in general -- it already was.
+    avg ~9.3s per query (12 structured-fact cases, k=2).
+    UPDATED AGAIN 2026-09-14, p95 loosened not tightened: four full-suite
+    runs the same day measured p95/max of (46.5/39.4s), (52.2/44.2s),
+    (14.8/14.1s -- an isolated single-test rerun), and (39.1/33.9s). p50 held
+    steady and low every time (3-6s). This is real, repeated evidence of
+    bimodal Groq cloud tail latency under sustained same-day usage -- most
+    calls land fast, but some fraction stall for 30-45s longer, and which
+    specific question stalls varies run to run (not the same case twice).
+    Tightening the old 20s floor kept failing on this real variance, not on
+    a regression; 55s is set from the actual observed ceiling (52.2s) plus
+    headroom, not tightened back down without a reason to believe the tail
+    got shorter. NOT GOOD: any new failure here means latency got worse than
+    this already-loose, measured ceiling -- not proof the system is fast in
+    general, and not something to keep loosening indefinitely either.
     CAVEAT: with only 14 samples, this p95 is illustrative, not a trustworthy
     tail estimate -- a real p95 needs hundreds of samples (production
     traffic), which is exactly the kind of number this suite can't produce
@@ -238,7 +243,7 @@ def test_latency_percentiles(query_results):
     p95 = statistics.quantiles(latencies, n=20)[18] if len(latencies) >= 2 else latencies[0]
     print(f"\nLatency  p50: {p50:.2f}s  p95: {p95:.2f}s  min: {latencies[0]:.2f}s  max: {latencies[-1]:.2f}s")
     assert p50 < 15, f"p50 latency {p50:.2f}s exceeds the 15s regression floor (k=2 sweep averaged ~9.3s)"
-    assert p95 < 20, f"p95 latency {p95:.2f}s exceeds the 20s regression floor (provisional, not yet confirmed by a full run at k=2)"
+    assert p95 < 55, f"p95 latency {p95:.2f}s exceeds the 55s regression floor (measured ceiling across four 2026-09-14 runs: 52.2s)"
 
 
 # REMOVED 2026-09-08 (test_hallucination_gate_group_accident,
