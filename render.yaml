@@ -1,19 +1,23 @@
-# Render Blueprint (Milestone 6.5). Declares both services plus a managed
-# Postgres as code, deployed via Render's "New Blueprint" flow pointed at
-# this repo, rather than clicked together by hand in the dashboard.
+# Render Blueprint (Milestone 6.5). Declares both services, deployed via
+# Render's "New Blueprint" flow pointed at this repo, rather than clicked
+# together by hand in the dashboard.
 #
-# Secrets (GROQ_API_KEY, VOYAGE_API_KEY, API_KEYS) are marked `sync: false`
-# below -- Render creates the env var but leaves it empty, so the actual
-# values are entered once in the dashboard after first deploy, never
-# committed here.
+# No databases: block -- DATABASE_URL points at the existing Supabase
+# Postgres (same connection string as backend/.env), not a new
+# Render-managed instance, so the already-populated documents_db data
+# stays reachable instead of landing in a second, empty database.
+#
+# Secrets (GROQ_API_KEY, VOYAGE_API_KEY, API_KEYS, DATABASE_URL) are marked
+# `sync: false` below -- Render creates the env var but leaves it empty, so
+# the actual values are entered once in the dashboard after first deploy,
+# never committed here.
 #
 # Persistence: Render allows exactly one disk per service, mounted at one
 # path -- so QDRANT_PATH/DATA_FOLDER/FEEDBACK_LOG_PATH/EXPERIMENTS_LOG_PATH
 # all point under the single /var/data mount below instead of their
 # individual local-dev defaults (backend/qdrant_data, backend/data, etc.).
 # documents_db itself doesn't need a path override: that moved to Postgres
-# in Milestone 6.2 (db.py/documents_store.py) and is covered by the
-# database block instead.
+# in Milestone 6.2 (db.py/documents_store.py).
 #
 # Known gap this doesn't solve: there's no upload endpoint, so the actual
 # insurance PDFs (gitignored, never in the repo) still need to land in
@@ -21,13 +25,6 @@
 # via Render's dashboard Shell (one-time, works fine for this project's ~16
 # documents) or a real upload endpoint if documents start arriving more
 # often. Worth its own decision before relying on this for new documents.
-databases:
-  - name: insurance-rag-db
-    plan: basic-256mb # cheapest managed tier as of writing -- Render's plan
-                       # list changes; verify current names/pricing in the
-                       # dashboard before deploying
-    region: oregon
-
 services:
   - type: web
     name: insurance-rag-backend
@@ -49,9 +46,7 @@ services:
       - key: API_KEYS
         sync: false
       - key: DATABASE_URL
-        fromDatabase:
-          name: insurance-rag-db
-          property: connectionString
+        sync: false # Supabase connection string -- see backend/.env
       - key: QDRANT_PATH
         value: /var/data/qdrant_data
       - key: DATA_FOLDER
@@ -66,8 +61,9 @@ services:
     runtime: docker
     dockerfilePath: ./frontend/Dockerfile
     dockerContext: ./frontend
-    plan: starter # free tier works too, but spins down when idle -- the
-                   # first request after a quiet period would hang 30-60s
+    plan: free # no disk needed here, so free tier works -- just note it
+               # spins down when idle, so the first request after a quiet
+               # period will hang 30-60s while it wakes back up
     region: oregon
     envVars:
       - key: API_BASE_URL
