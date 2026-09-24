@@ -1,6 +1,6 @@
 # ADR-0003: Ollama `nomic-embed-text`, general-purpose embeddings
 
-**Status:** Accepted (provisional)
+**Status:** Superseded by [ADR-0013](0013-voyage-law-embeddings.md)
 **Date:** 2026-08-25 (originating in Milestone 2)
 
 ## Context

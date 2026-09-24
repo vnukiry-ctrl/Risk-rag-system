@@ -31,7 +31,7 @@ What this makes easier, what it makes harder, and what would need to be true to 
 |---|---|---|
 | [0001](0001-temperature-0-for-factual-qa.md) | LLM temperature = 0 for policy Q&A | Accepted |
 | [0002](0002-parent-child-chunking-strategy.md) | Parent-child chunking, size-based splitting | Accepted |
-| [0003](0003-general-purpose-embedding-model.md) | Ollama `nomic-embed-text`, general-purpose embeddings | Accepted (provisional) |
+| [0003](0003-general-purpose-embedding-model.md) | Ollama `nomic-embed-text`, general-purpose embeddings | Superseded by 0013 |
 | [0004](0004-entity-scoped-retrieval-filtering.md) | Filter retrieval to named policy/insurer when the question names one | Accepted |
 | [0005](0005-defer-top-k-and-context-budget-tuning.md) | Defer top-k and context-budget tuning | Top-k superseded by 0011; context-budget still deferred |
 | [0006](0006-defer-ab-testing-framework.md) | Defer A/B testing framework | Deferred |
@@ -40,3 +40,5 @@ What this makes easier, what it makes harder, and what would need to be true to 
 | [0009](0009-retrieval-confidence-gating.md) | Retrieval-confidence gating before answering | Accepted, threshold measured 2026-09-14 (0.5 -> 0.6) |
 | [0010](0010-api-key-auth-and-rate-limiting.md) | Shared API-key auth and per-key rate limiting | Accepted |
 | [0011](0011-topk-tuned-from-real-data.md) | Top-k tuned from real data (k=5 -> k=2) | Accepted |
+| [0012](0012-policy-family-resolution.md) | Policy-family resolution for same policy number, multiple periods | Accepted, B0621FMOUN000426 case verified 2026-09-21; ALCOA108 case still pending (rate-limited during verification) |
+| [0013](0013-voyage-law-embeddings.md) | Voyage AI `voyage-law-2` embeddings, replacing Ollama `nomic-embed-text` | Accepted, pending golden-set re-verification |

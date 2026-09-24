@@ -24,13 +24,22 @@ logger = logging.getLogger(__name__)
 # has no notion of domain concepts (e.g. "coverage limit" vs "premium"); a
 # domain-tuned or larger model is the first thing to try if retrieval
 # quality is the bottleneck on a new project, before touching chunk sizes.
-EMBEDDINGS_PROVIDER = "ollama"  # Options: "ollama" or "anthropic"
+#
+# DECISION (Milestone 6.4): switched to Voyage AI's voyage-law-2 -- trained
+# on legal/contract text, which insurance policies are, rather than a
+# general-purpose model with no notion of "exclusion" vs "endorsement" as
+# contract concepts. Ollama stayed free but required a host-level dependency
+# that blocked every hosting option except keeping this on one machine; a
+# hosted embeddings API removes that blocker as a side effect. See
+# docs/adr/ for the full writeup.
+EMBEDDINGS_PROVIDER = "voyage"  # Options: "ollama", "voyage", or "anthropic"
 # Overridable for Docker Compose, where "localhost" from inside the backend
 # container would mean the backend container itself, not the host machine
 # Ollama normally runs on -- compose points this at host.docker.internal.
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_EMBED_MODEL = "nomic-embed-text"
-VECTOR_SIZE = 768  # nomic-embed-text output dimension
+VOYAGE_MODEL = "voyage-law-2"
+VECTOR_SIZE = 768  # overridden per-provider below (nomic-embed-text's own dimension)
 
 
 class OllamaEmbedder:
@@ -59,8 +68,47 @@ class OllamaEmbedder:
         return self.embed_documents([text])[0]
 
 
+class VoyageEmbedder:
+    """input_type differs between embed_documents and embed_query (Voyage's
+    asymmetric embedding support) -- the model embeds a passage and a
+    question into the vector space slightly differently, which measurably
+    improves retrieval over embedding both the same way."""
+
+    def __init__(self):
+        import voyageai
+        api_key = os.getenv("VOYAGE_API_KEY")
+        if not api_key:
+            raise RuntimeError("VOYAGE_API_KEY is not set -- see backend/.env.example")
+        self._client = voyageai.Client(api_key=api_key)
+        self._errors = voyageai.error
+
+    def _embed(self, texts: List[str], input_type: str) -> List[List[float]]:
+        try:
+            result = self._client.embed(texts, model=VOYAGE_MODEL, input_type=input_type)
+        except self._errors.AuthenticationError:
+            raise RuntimeError("Voyage AI rejected VOYAGE_API_KEY -- check backend/.env")
+        except self._errors.RateLimitError as e:
+            raise RuntimeError(f"Voyage AI rate limit hit embedding {len(texts)} texts: {e}")
+        except (self._errors.APIConnectionError, self._errors.Timeout) as e:
+            raise RuntimeError(f"Could not reach Voyage AI: {e}")
+        return result.embeddings
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        if not texts:
+            return []
+        return self._embed(texts, input_type="document")
+
+    def embed_query(self, text: str) -> List[float]:
+        return self._embed([text], input_type="query")[0]
+
+
 if EMBEDDINGS_PROVIDER == "ollama":
     embeddings = OllamaEmbedder()
+    VECTOR_SIZE = 768
+
+elif EMBEDDINGS_PROVIDER == "voyage":
+    embeddings = VoyageEmbedder()
+    VECTOR_SIZE = 1024  # voyage-law-2 output dimension
 
 elif EMBEDDINGS_PROVIDER == "anthropic":
     # TODO: TO USE ANTHROPIC INSTEAD:
@@ -180,6 +228,31 @@ def index_documents(
     client.upsert(collection_name=COLLECTION_NAME, points=points)
     logger.info("Indexed %d chunks into Qdrant collection %r", len(points), COLLECTION_NAME)
     return len(points)
+
+
+def count_chunks_by_source() -> Dict[str, int]:
+    """Count indexed child chunks per source_file, for the /documents view."""
+    client = get_client()
+    if COLLECTION_NAME not in [c.name for c in client.get_collections().collections]:
+        return {}
+
+    counts: Dict[str, int] = {}
+    offset = None
+    while True:
+        points, offset = client.scroll(
+            collection_name=COLLECTION_NAME,
+            with_payload=["source_file"],
+            with_vectors=False,
+            limit=256,
+            offset=offset,
+        )
+        for point in points:
+            source_file = point.payload.get("source_file")
+            if source_file:
+                counts[source_file] = counts.get(source_file, 0) + 1
+        if offset is None:
+            break
+    return counts
 
 
 def semantic_search(query: str, top_k: int = 2, source_files: List[str] = None) -> List[Dict]:

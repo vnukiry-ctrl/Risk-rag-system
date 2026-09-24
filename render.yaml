@@ -1,0 +1,81 @@
+# Render Blueprint (Milestone 6.5). Declares both services plus a managed
+# Postgres as code, deployed via Render's "New Blueprint" flow pointed at
+# this repo, rather than clicked together by hand in the dashboard.
+#
+# Secrets (GROQ_API_KEY, VOYAGE_API_KEY, API_KEYS) are marked `sync: false`
+# below -- Render creates the env var but leaves it empty, so the actual
+# values are entered once in the dashboard after first deploy, never
+# committed here.
+#
+# Persistence: Render allows exactly one disk per service, mounted at one
+# path -- so QDRANT_PATH/DATA_FOLDER/FEEDBACK_LOG_PATH/EXPERIMENTS_LOG_PATH
+# all point under the single /var/data mount below instead of their
+# individual local-dev defaults (backend/qdrant_data, backend/data, etc.).
+# documents_db itself doesn't need a path override: that moved to Postgres
+# in Milestone 6.2 (db.py/documents_store.py) and is covered by the
+# database block instead.
+#
+# Known gap this doesn't solve: there's no upload endpoint, so the actual
+# insurance PDFs (gitignored, never in the repo) still need to land in
+# /var/data/data on the server somehow before the first /extract can run --
+# via Render's dashboard Shell (one-time, works fine for this project's ~16
+# documents) or a real upload endpoint if documents start arriving more
+# often. Worth its own decision before relying on this for new documents.
+databases:
+  - name: insurance-rag-db
+    plan: basic-256mb # cheapest managed tier as of writing -- Render's plan
+                       # list changes; verify current names/pricing in the
+                       # dashboard before deploying
+    region: oregon
+
+services:
+  - type: web
+    name: insurance-rag-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: starter # disks require a paid plan -- free-tier services can't attach one
+    region: oregon
+    healthCheckPath: /health
+    disk:
+      name: rag-storage
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false
+      - key: VOYAGE_API_KEY
+        sync: false
+      - key: API_KEYS
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: insurance-rag-db
+          property: connectionString
+      - key: QDRANT_PATH
+        value: /var/data/qdrant_data
+      - key: DATA_FOLDER
+        value: /var/data/data
+      - key: FEEDBACK_LOG_PATH
+        value: /var/data/feedback_log.jsonl
+      - key: EXPERIMENTS_LOG_PATH
+        value: /var/data/experiments_log.jsonl
+
+  - type: web
+    name: insurance-rag-frontend
+    runtime: docker
+    dockerfilePath: ./frontend/Dockerfile
+    dockerContext: ./frontend
+    plan: starter # free tier works too, but spins down when idle -- the
+                   # first request after a quiet period would hang 30-60s
+    region: oregon
+    envVars:
+      - key: API_BASE_URL
+        # Render derives each service's public URL from its `name` above:
+        # https://<name>.onrender.com. If "insurance-rag-backend" was
+        # already taken, Render appends a random suffix instead -- check
+        # the actual URL in the dashboard after first deploy and update
+        # this if so.
+        value: https://insurance-rag-backend.onrender.com
+      - key: API_KEY
+        sync: false # must match one of the backend's API_KEYS entries

@@ -65,12 +65,18 @@ GOLDEN_SET = [
         "expected_answer_contains": ["12,940", "12940"],
         "note": (
             "ALCOA108 also covers a second real document -- the 2025-2026 21B "
-            "adjustment endorsement (premium $1,152) -- which documents_db drops "
-            "entirely (see the B0621FMOUN000426 known_limitation case below for "
-            "why: dict-by-policy_number keying keeps only the later-loaded "
-            "document's metadata). This question is worded to land on the renewal, "
-            "the doc that wins the collision, so it's a clean structured_fact rather "
-            "than a second collision case."
+            "adjustment endorsement (premium $1,152) -- which documents_db used to "
+            "drop entirely (see the B0621FMOUN000426 known_limitation case below "
+            "for why: dict-by-policy_number keying kept only the later-loaded "
+            "document's metadata). This question was worded to land on the "
+            "renewal, the doc that won the collision, so it read as a clean "
+            "structured_fact rather than a second collision case. FIXED "
+            "2026-09-17 (ADR-0012): documents_db is now keyed by source_file, so "
+            "both documents keep their own metadata; find_relevant_source_files "
+            "now resolves an unscoped question about ALCOA108 to whichever period "
+            "is most recent, disclosing the other. Not yet re-verified against a "
+            "fresh /extract of the real documents -- this question and its "
+            "expected answer haven't been re-checked against that fix."
         ),
     },
     {
@@ -193,29 +199,38 @@ GOLDEN_SET = [
     {
         "question": "What is the total premium for the Contingent Protective policy "
         "B0621FMOUN000426 across its full 3-year term?",
-        "expected_policy": None,
-        "type": "known_limitation",
+        "expected_policy": "B0621FMOUN000426",
+        "type": "structured_fact",
+        "expected_answer_contains": ["12,987", "12987"],
         "note": (
-            "documents_db is a dict keyed by policy_number (main.py's "
-            "/extract handler); this policy number is shared by two real "
-            "files -- the actual 3-year policy (2026-07-28 to 2029-07-01, total "
-            "premium CAD $12,987 across three $4,329 installments) and its Year-1 "
-            "installment invoice (MRU 26-27 Contingent Protective (Year 1 of 3) "
-            "Invoice 1011216.pdf). Whichever loads later in os.listdir() order "
-            "wins the key and silently overwrites the other's metadata in "
-            "documents_db -- currently the invoice, leaving only its single "
-            "$4,329 installment and a wrong period_to of 2027 instead of 2029. "
-            "Qdrant still indexes both documents' full text (it isn't keyed this "
-            "way), so semantic search can still surface the real policy's "
-            "content, but the structured-fact blending step in /query reads from "
-            "documents_db and inherits its wrong numbers. Same root cause as the "
-            "ALCOA108 collision above (see that case's note); this one is called "
-            "out separately because the two documents disagree on values a user "
-            "would plausibly ask about, where ALCOA108's collision happens to "
-            "resolve to the more likely intended document. Real fix needs "
-            "documents_db keyed by something unique per file (e.g. source_file) "
-            "with policy_number as a secondary index, not a primary key -- out of "
-            "scope for a golden-set fix."
+            "Was a known_limitation until 2026-09-21 -- documents_db used to be a "
+            "dict keyed by policy_number (main.py's /extract handler); this "
+            "policy number is shared by two real files -- the actual 3-year "
+            "policy (2026-07-28 to 2029-07-01, total premium CAD $12,987 across "
+            "three $4,329 installments) and its Year-1 installment invoice (MRU "
+            "26-27 Contingent Protective (Year 1 of 3) Invoice 1011216.pdf). "
+            "Whichever loaded later in os.listdir() order won the key and "
+            "silently overwrote the other's metadata -- previously the invoice, "
+            "leaving only its single $4,329 installment and a wrong period_to of "
+            "2027 instead of 2029. FIXED 2026-09-17 (ADR-0012): documents_db is "
+            "now keyed by source_file (both documents keep their own metadata), "
+            "and find_relevant_source_files resolves an unscoped question about "
+            "this policy number to the most recent period on file, disclosing "
+            "the other. VERIFIED 2026-09-21 against a live /extract + /query run "
+            "on the real documents: both files now keep separate metadata, and "
+            "this question (naming no specific year) correctly resolves to the "
+            "3-year policy and answers CAD 12,987 with a disclosure note about "
+            "the Year-1-invoice version also on file -- not the invoice's "
+            "$4,329. That same verification pass found and fixed a second real "
+            "gap: parse_flexible_date() (insurance_loader.py) didn't handle "
+            "ordinal day suffixes ('28th July 2026', '1st July 2029', the actual "
+            "format this policy's dates use), which silently failed to parse "
+            "the 3-year policy's period and would have made the *shorter* "
+            "invoice period rank as 'latest' by falling back to extracted_date. "
+            "A question-worded structured_fact case couldn't have caught that on "
+            "its own, since expected_policy matches either family member "
+            "(they share the same policy_number) -- expected_answer_contains' "
+            "dollar-figure check is what actually distinguishes the two."
         ),
     },
 ]

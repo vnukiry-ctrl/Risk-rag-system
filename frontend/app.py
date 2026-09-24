@@ -39,25 +39,41 @@ st.sidebar.info("RAG system for analyzing insurance documents")
 
 if page == "🏠 Home":
     st.title("📋 Insurance Document RAG System")
-    
+
+    # DECISION (bug fix): these used to be hardcoded "0" placeholders that
+    # never reflected real state. Documents/Policies now come from a live
+    # /documents call; API Status reflects whether that call actually
+    # succeeded rather than assuming the backend is up.
+    try:
+        docs_response = requests.get(f"{API_BASE_URL}/documents", headers=API_HEADERS, timeout=5)
+        api_up = docs_response.status_code == 200
+        documents = docs_response.json().get("documents", []) if api_up else []
+    except Exception:
+        api_up = False
+        documents = []
+
+    doc_count = len(documents)
+    policy_count = len({d.get("policy_number") for d in documents if d.get("policy_number")})
+
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("Documents", "0")
+        st.metric("Documents", doc_count)
     with col2:
-        st.metric("Policies", "0")
+        st.metric("Policies", policy_count)
     with col3:
-        st.metric("API Status", "🟢 Running")
-    
+        st.metric("API Status", "🟢 Running" if api_up else "🔴 Unreachable")
+
     st.markdown("---")
     st.subheader("Quick Start")
-    
+
     if st.button("📥 Extract Documents", key="extract_home"):
         with st.spinner("Extracting..."):
             try:
-                response = requests.post(f"{API_BASE_URL}/extract", headers=API_HEADERS)
+                response = requests.post(f"{API_BASE_URL}/extract", headers=API_HEADERS, timeout=300)
                 if response.status_code == 200:
                     data = response.json()
-                    st.success(f"✅ Extracted {len(data)} documents!")
+                    st.success(f"✅ Extracted {data.get('total', 0)} documents "
+                               f"({len(data.get('successful', []))} succeeded, {len(data.get('failed', []))} failed)")
                 else:
                     st.error(f"Error: {response.status_code}")
             except Exception as e:
@@ -66,55 +82,119 @@ if page == "🏠 Home":
 
 elif page == "📄 Documents":
     st.title("📄 Extracted Documents")
-    
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        st.subheader("Document List")
-    with col2:
-        if st.button("🔄 Refresh"):
-            st.rerun()
-    
-    try:
-        response = requests.get(f"{API_BASE_URL}/documents", headers=API_HEADERS)
-        if response.status_code == 200:
+
+    # DECISION: two tabs, two independent backend stores (documents_db vs
+    # documents_db_professional) -- rendering both from the same helper below
+    # so the "old way" (head_truncate) and "professional way"
+    # (classify_then_target) results can be compared side by side on the
+    # same document set instead of one overwriting the other.
+    def render_documents_tab(list_endpoint: str, extract_endpoint: str, key_prefix: str):
+        col1, col2, col3 = st.columns([2, 1, 1])
+        with col2:
+            run_extract = st.button("📥 Run extraction", key=f"{key_prefix}_extract")
+        with col3:
+            if st.button("🔄 Refresh", key=f"{key_prefix}_refresh"):
+                st.rerun()
+
+        if run_extract:
+            with st.spinner("Extracting... this calls the LLM once per document"):
+                try:
+                    resp = requests.post(f"{API_BASE_URL}{extract_endpoint}", headers=API_HEADERS, timeout=300)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        st.success(f"Done: {len(data.get('successful', []))} succeeded, {len(data.get('failed', []))} failed")
+                    else:
+                        st.error(f"Error: {resp.status_code} - {resp.text}")
+                except Exception as e:
+                    st.error(f"Connection error: {str(e)}")
+
+        try:
+            response = requests.get(f"{API_BASE_URL}{list_endpoint}", headers=API_HEADERS)
+            if response.status_code != 200:
+                st.error(f"Error: {response.status_code}")
+                return
+
             docs_data = response.json()
             total = docs_data.get("total", 0)
             documents = docs_data.get("documents", [])
-            
+
             st.metric("Total Documents", total)
-            
-            if documents:
-                st.markdown("---")
-                for doc in documents:
-                    with st.expander(f"📋 {doc.get('policy_number', 'Unknown')} - {doc.get('source_file', 'Unknown')}"):
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.write("**Policy Information**")
-                            st.write(f"Policy #: {doc.get('policy_number', 'N/A')}")
-                            st.write(f"Type: {doc.get('insurance_type', 'N/A')}")
-                            st.write(f"Company: {doc.get('insurance_company', 'N/A')}")
-                            st.write(f"Broker: {doc.get('broker', 'N/A')}")
-                        with col2:
-                            st.write("**Coverage & Dates**")
-                            st.write(f"From: {doc.get('period_from', 'N/A')}")
-                            st.write(f"To: {doc.get('period_to', 'N/A')}")
-                            st.write(f"Premium: ${doc.get('premium_amount', 'N/A')}")
-                            st.write(f"Coverage Limit: {doc.get('coverage_limit', 'N/A')}")
-                        
-                        st.write("**Insured**")
-                        st.write(f"{doc.get('insured_name', 'N/A')}")
-                        st.write(f"{doc.get('insured_address', 'N/A')}")
-                        
-                        if doc.get('key_coverages'):
-                            st.write("**Coverages**")
-                            for coverage in doc.get('key_coverages', []):
-                                st.write(f"• {coverage}")
-            else:
-                st.info("No documents yet. Extract documents on Home page.")
-        else:
-            st.error(f"Error: {response.status_code}")
-    except Exception as e:
-        st.error(f"Connection error: {str(e)}")
+
+            if not documents:
+                st.info("No documents yet. Click 'Run extraction' above.")
+                return
+
+            st.markdown("---")
+
+            # DECISION (bug fix): every value here goes through str() -- the
+            # extraction LLM has no enforced output type for numeric-looking
+            # fields (premium_amount etc.), so one document can come back
+            # with an int and another with a string for the same field. A
+            # mixed-type column crashes st.dataframe()'s Arrow conversion for
+            # the *entire* table (observed live: "Expected bytes, got a
+            # 'int' object" on Premium), not just that cell, so this must be
+            # normalized before pd.DataFrame() ever sees it.
+            def _cell(value, default="N/A"):
+                return default if value is None else str(value)
+
+            table_rows = [
+                {
+                    "Document": _cell(doc.get("source_file"), "Unknown"),
+                    "Policy #": _cell(doc.get("policy_number")),
+                    "Type": _cell(doc.get("insurance_type")),
+                    "Insurer": _cell(doc.get("insurance_company")),
+                    "Broker": _cell(doc.get("broker")),
+                    "Insured": _cell(doc.get("insured_name")),
+                    "Period From": _cell(doc.get("period_from")),
+                    "Period To": _cell(doc.get("period_to")),
+                    "Premium": _cell(doc.get("premium_amount")),
+                    "Coverage Limit": _cell(doc.get("coverage_limit")),
+                    "Deductible": _cell(doc.get("deductible")),
+                    "Chunks": doc.get("chunks_indexed", 0),
+                    "Status": "⚠️ Error" if "error" in doc else "✅ Extracted",
+                }
+                for doc in documents
+            ]
+            st.dataframe(
+                pd.DataFrame(table_rows),
+                width="stretch",
+                hide_index=True,
+            )
+
+            st.markdown("---")
+            st.subheader("Document Details")
+            for i, doc in enumerate(documents):
+                with st.expander(f"📋 {doc.get('policy_number', 'Unknown')} - {doc.get('source_file', 'Unknown')}"):
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.write("**Policy Information**")
+                        st.write(f"Policy #: {doc.get('policy_number', 'N/A')}")
+                        st.write(f"Type: {doc.get('insurance_type', 'N/A')}")
+                        st.write(f"Company: {doc.get('insurance_company', 'N/A')}")
+                        st.write(f"Broker: {doc.get('broker', 'N/A')}")
+                    with col2:
+                        st.write("**Coverage & Dates**")
+                        st.write(f"From: {doc.get('period_from', 'N/A')}")
+                        st.write(f"To: {doc.get('period_to', 'N/A')}")
+                        st.write(f"Premium: ${doc.get('premium_amount', 'N/A')}")
+                        st.write(f"Coverage Limit: {doc.get('coverage_limit', 'N/A')}")
+
+                    st.write("**Insured**")
+                    st.write(f"{doc.get('insured_name', 'N/A')}")
+                    st.write(f"{doc.get('insured_address', 'N/A')}")
+
+                    if doc.get('key_coverages'):
+                        st.write("**Coverages**")
+                        for coverage in doc.get('key_coverages', []):
+                            st.write(f"• {coverage}")
+        except Exception as e:
+            st.error(f"Connection error: {str(e)}")
+
+    tab_old, tab_pro = st.tabs(["🕰️ Old Way (head truncation)", "🧭 Professional Way (classify-then-target)"])
+    with tab_old:
+        render_documents_tab("/documents", "/extract", "old")
+    with tab_pro:
+        render_documents_tab("/documents/professional", "/extract/professional", "pro")
 
 
 elif page == "🔍 Search":

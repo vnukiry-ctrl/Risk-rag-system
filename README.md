@@ -4,7 +4,7 @@ A Retrieval Augmented Generation (RAG) system for insurance document analysis, b
 - **Backend**: FastAPI
 - **Frontend**: Streamlit
 - **Vector Database**: Qdrant
-- **Embeddings**: Ollama (`nomic-embed-text`)
+- **Embeddings**: Voyage AI (`voyage-law-2`, domain-tuned for legal/contract text)
 - **LLM**: Groq (`openai/gpt-oss-120b`)
 
 ## Project Overview
@@ -16,12 +16,13 @@ Ingests insurance policy PDFs, extracts structured metadata (policy number, insu
 - LLM-based metadata extraction from insurance PDFs (Groq)
 - Text normalization to strip PDF layout noise before extraction/indexing
 - Parent-child (size-based) chunking for retrieval: small chunks embedded for precision, larger parent passages returned for context
-- Semantic search over indexed documents (Qdrant + Ollama embeddings)
+- Semantic search over indexed documents (Qdrant + Voyage AI embeddings)
 - LLM-based Q&A with source attribution, blending structured metadata with retrieved excerpts
 - Multi-turn conversations: per-session chat history, plus history-aware query condensation so follow-up questions ("what about its deductible?") retrieve correctly
 - Retrieval-confidence gating: refuses to answer (instead of guessing) when nothing retrieved is similar enough to the question to trust
+- Policy-family resolution: a policy number shared across multiple documents (renewal/endorsement/extension) resolves to the period the question names, or the most recent one by default, with other periods disclosed in the answer ([ADR-0012](docs/adr/0012-policy-family-resolution.md))
 - Structured logging and per-document error handling/reporting
-- Swappable LLM/embeddings providers (Groq ↔ Anthropic, Ollama ↔ Anthropic) via one-line config changes
+- Swappable LLM/embeddings providers (Groq ↔ Anthropic, Voyage ↔ Ollama) via one-line config changes
 
 ## Tech Stack
 
@@ -31,7 +32,7 @@ Ingests insurance policy PDFs, extracts structured metadata (policy number, insu
 | Frontend UI | Streamlit |
 | Document Processing | LangChain text splitters |
 | Vector Storage | Qdrant (persistent, on-disk local mode) |
-| Embeddings | Ollama (`nomic-embed-text`), swappable to Anthropic |
+| Embeddings | Voyage AI (`voyage-law-2`), swappable to Ollama |
 | LLM | Groq (`openai/gpt-oss-120b`), swappable to Anthropic |
 
 ## Setup
@@ -43,7 +44,7 @@ python -m venv venv
 venv\Scripts\activate
 pip install -r requirements.txt
 ```
-Also requires [Ollama](https://ollama.com) running locally with the `nomic-embed-text` model pulled (`ollama pull nomic-embed-text`), [Tesseract OCR](https://github.com/UB-Mannheim/tesseract/wiki) installed and on PATH (image-format documents only — `pip install pytesseract` installs only the Python wrapper, never the binary itself), and a `GROQ_API_KEY` plus `API_KEYS` in `backend/.env` (see `backend/.env.example`; see [ADR-0010](docs/adr/0010-api-key-auth-and-rate-limiting.md) for what `API_KEYS` gates).
+Also requires [Tesseract OCR](https://github.com/UB-Mannheim/tesseract/wiki) installed and on PATH (image-format documents only — `pip install pytesseract` installs only the Python wrapper, never the binary itself), and `GROQ_API_KEY`, `VOYAGE_API_KEY`, plus `API_KEYS` in `backend/.env` (see `backend/.env.example`; see [ADR-0010](docs/adr/0010-api-key-auth-and-rate-limiting.md) for what `API_KEYS` gates). A free Voyage AI account covers 50M tokens on `voyage-law-2` — plenty for this project's document volume.
 
 ### Frontend
 ```bash
@@ -59,7 +60,7 @@ Needs its own `API_KEY` in `frontend/.env` (see `frontend/.env.example`), matchi
 echo {} > backend/documents_db.json   # first run only -- see docker-compose.yml's comment for why
 docker compose up --build
 ```
-Runs backend (`:8000`) and frontend (`:8501`) as containers; Qdrant stays embedded inside the backend process (its own deliberate design, not containerized separately) and Ollama stays a host-level dependency (`OLLAMA_BASE_URL` in `docker-compose.yml` points at `host.docker.internal`). `backend/data/`, `backend/qdrant_data/`, and the runtime JSON/JSONL files are bind-mounted so indexed documents and logs persist across container restarts. **Written but not build-verified** — this machine doesn't have Docker installed, so the Dockerfiles/compose config haven't been run end-to-end yet; if a build fails, that's the first thing to check.
+Runs backend (`:8000`) and frontend (`:8501`) as containers; Qdrant stays embedded inside the backend process (its own deliberate design, not containerized separately). `backend/data/`, `backend/qdrant_data/`, and the runtime JSON/JSONL files are bind-mounted so indexed documents and logs persist across container restarts. **Written but not build-verified** — this machine doesn't have Docker installed, so the Dockerfiles/compose config haven't been run end-to-end yet; if a build fails, that's the first thing to check.
 
 ## Learning Guide
 
@@ -84,14 +85,22 @@ latency percentiles are all scored against `tests/golden_set.py` — 14 cases
 (12 structured-fact + 2 known-limitation) hand-verified directly against
 the 16 real Mount Royal University insurance documents in `backend/data/`
 (rebuilt 2026-09-08/09-11, replacing an earlier version tested against 9
-placeholder documents — see that file's docstring). Two real, understood
-gaps stay in the set as `known_limitation` cases rather than being dropped:
-a `documents_db` key-collision bug (two document pairs share a policy
-number; whichever loads later in `os.listdir()` order silently overwrites
-the other's structured metadata) and one document whose real declarations
-sit behind enough boilerplate that LLM metadata extraction never reaches
-them (though retrieval and hallucination-avoidance both still work
-correctly for it — see the case notes in `golden_set.py`).
+placeholder documents — see that file's docstring). One real, understood gap stays in the set as a `known_limitation` case
+rather than being dropped: a document whose real declarations sit behind
+enough boilerplate that LLM metadata extraction never reaches them (though
+retrieval and hallucination-avoidance both still work correctly for it —
+see the case notes in `golden_set.py`). A second gap — the `documents_db`
+key-collision bug (two document pairs share a policy number; whichever
+loaded later in `os.listdir()` order silently overwrote the other's
+structured metadata) — was **fixed 2026-09-17**
+([ADR-0012](docs/adr/0012-policy-family-resolution.md)) and **verified
+2026-09-21** for the B0621FMOUN000426 pair via a live `/extract` + `/query`
+run (its `golden_set.py` case is now a scored `structured_fact`, not a
+`known_limitation`); the ALCOA108 pair's case is still unverified (a Groq
+rate limit hit during that same run, with no prior successful extraction
+to fall back on for one of its two files) — not yet re-run through the
+full `pytest` suite either way, so hit-rate/MRR/precision numbers below
+still reflect the 2026-09-14 measurement, not this fix.
 
 **What "good" looks like for each metric:**
 
@@ -119,7 +128,7 @@ time) and see the script's docstring for what it measures and why.
 
 ## Project Status
 
-_Last updated: 2026-09-14 (confidence-gate threshold tuned from real off-topic probes, 0.5 → 0.6, closing Milestone 3's other open half — ADR-0009; A/B testing mechanism verified end-to-end — ADR-0007; Docker containerization written (not build-verified, no Docker on this machine) — Milestone 6.3; two real bugs found and fixed — insurance_type phrasing drift breaking entity scoping, and documents_db/Qdrant payload desync after a manually-patched extraction failure — bringing the golden set to 100% hit rate. Real documents loaded 2026-09-08/11 — 16 Mount Royal University insurance policies replace the placeholder set; top-k tuned k=5 → k=2 — ADR-0011; Milestone 6 API key auth and rate limiting)_
+_Last updated: 2026-09-21 (policy-family resolution — ADR-0012 — verified live against real data: the B0621FMOUN000426 policy pair now correctly resolves to its 3-year policy by default with the Year-1 invoice disclosed, `golden_set.py`'s case for it promoted to a scored `structured_fact`; also found and fixed an ordinal-date parsing gap that had been silently breaking "latest period" selection for this exact document. The ALCOA108 pair's case remains unverified, blocked by a Groq rate limit hit during the same run. Previously, 2026-09-17: `documents_db` key-collision bug fixed at the code level, plus the underlying latest-period-by-default-with-disclosure logic added to `find_relevant_source_files`. Further back, 2026-09-14: confidence-gate threshold tuned from real off-topic probes, 0.5 → 0.6, closing Milestone 3's other open half — ADR-0009; A/B testing mechanism verified end-to-end — ADR-0007; Docker containerization written (not build-verified, no Docker on this machine) — Milestone 6.3; two real bugs found and fixed — insurance_type phrasing drift breaking entity scoping, and documents_db/Qdrant payload desync after a manually-patched extraction failure — bringing the golden set to 100% hit rate. Real documents loaded 2026-09-08/11 — 16 Mount Royal University insurance policies replace the placeholder set; top-k tuned k=5 → k=2 — ADR-0011; Milestone 6 API key auth and rate limiting)_
 
 The roadmap below separates the **build phases** (the actual pipeline/system work, done in sequence) from **documentation** and **continuous improvement**, which aren't phases with an end state — they run alongside the build phases on an ongoing basis rather than being "reached" in turn.
 
@@ -152,7 +161,7 @@ The roadmap below separates the **build phases** (the actual pipeline/system wor
 
 **Known gaps carried forward:**
 - Extracted document metadata (`documents_db`) is in-memory only and must be rebuilt via `/extract` after each backend restart — the Qdrant vector index persists, but this dict doesn't. See `DOCUMENTATION2.md` Step 10 for details.
-- `documents_db`'s dict-keyed-by-policy_number design silently drops one document's metadata whenever two real files share a policy number (a policy plus its own adjustment endorsement or invoice, in the real data) — see `golden_set.py`'s `known_limitation` cases for the two instances this actually hits.
+- ~~`documents_db`'s dict-keyed-by-policy_number design silently drops one document's metadata whenever two real files share a policy number (a policy plus its own adjustment endorsement or invoice, in the real data)~~ — **fixed 2026-09-17** ([ADR-0012](docs/adr/0012-policy-family-resolution.md)): `documents_db` is now keyed by `source_file`, and `find_relevant_source_files` resolves a policy shared across multiple documents to the period the question names, or the most recent one by default (disclosed in the answer). **Verified 2026-09-21** against a live `/extract` + `/query` run on the real documents for the B0621FMOUN000426 case (`golden_set.py`'s case for it promoted from `known_limitation` to a scored `structured_fact`); that run also found and fixed a second real gap (`parse_flexible_date` didn't handle ordinal day suffixes like "28th July 2026", which had been silently defeating the "pick the latest period" logic for this exact document). The ALCOA108 case is still unverified — its adjustment-endorsement file hit a Groq rate limit during the same run and has no prior successful extraction to fall back on.
 - One real document (`26-27 Excess Side A D&O Policy 01-142-91-44 - Insured Copy.pdf`) has its actual declarations buried behind ~16 pages of insurer privacy-policy boilerplate, which LLM metadata extraction never reads past — every structured field comes back empty for it. Retrieval and answer-grounding both still work correctly despite this (verified live), so it's a structured-metadata gap only, not a Q&A-quality one.
 
 #### Milestone 3: RAG Chain Implementation — 🟡 Functional, basic
@@ -165,6 +174,7 @@ The roadmap below separates the **build phases** (the actual pipeline/system wor
 - Entity-scoped filtering (`find_relevant_source_files`, `main.py`, ADR-0004) matches on policy number, insured name, insurer, or insurance_type substrings — most real questions name one of those four things and scope correctly, but a question that only describes a policy some other way still searches unscoped, same as any RAG query without metadata filtering.
 - **Two real bugs found and fixed 2026-09-14, both explaining what had looked like "ordinary top-k noise" in earlier measurements:** (1) `insurance_type` phrasing isn't deterministic across separate LLM extraction runs of the *same* document ("Medical Malpractice" vs "Medical Professional Liability") — a golden-set question that scoped correctly for days silently stopped, with the LLM then confidently answering from the wrong document instead of declining. See [ADR-0004's update](docs/adr/0004-entity-scoped-retrieval-filtering.md) — not fixed at the code level, worked around by wording affected golden-set questions with the literal policy number instead. (2) When a document's LLM metadata extraction fails and gets manually patched into `documents_db.json` afterward, that patch never reaches the Qdrant chunks already indexed from the failed run — `documents_db.json` and the vector index's payloads silently drift out of sync, showing up as a `sources[].policy_number: null` even though retrieval and the answer are both actually correct. Fixed for the current index via a direct Qdrant payload sync; no code-level fix yet for future occurrences.
 - The old Milestone 2/3 known gap about an oversized placeholder PDF (`25-26 Group Accident Policy 100013386.pdf`) hallucinating a wrong attribution no longer applies — that document isn't part of the real data set. The real set's closest analog (the Excess Side A D&O extraction gap, Milestone 2 known gaps above) was live-verified 2026-09-08 to **not** reproduce that failure: it retrieves correctly and the LLM declines rather than guessing.
+- **Same policy number, different period (renewal/endorsement/extension) — fixed 2026-09-17, verified 2026-09-21 ([ADR-0012](docs/adr/0012-policy-family-resolution.md)):** `find_relevant_source_files` used to scope to every document sharing a matched policy number at once, which — once the Milestone 2 key-collision bug above is fixed — would have blended one period's premium/limit with another's in the same retrieval instead of losing one document's data outright. It now resolves the family to the period the question names (a year mentioned in the question), or to the most recent period by default with the other periods disclosed in the answer. `insurance_loader.py` gained parsed `period_from_iso`/`period_to_iso` and a `document_role` field (renewal/endorsement/extension/original/cancellation) to support this. Verified live against the real B0621FMOUN000426 policy pair — an unscoped question correctly resolved to the 3-year policy (not the Year-1 invoice), with the invoice disclosed as another period on file; a year-qualified question resolved silently to the same document. That verification also caught `parse_flexible_date` failing on ordinal day suffixes ("28th July 2026"), which had been silently defeating the latest-period selection for this exact document — fixed in the same pass.
 
 #### Milestone 4: Quality & Evaluation — 🟡 In progress
 - [x] Evaluation metrics (relevance, accuracy, latency) — `backend/tests/test_quality.py`: hit rate, MRR, precision@k, structured-fact answer correctness, latency percentiles

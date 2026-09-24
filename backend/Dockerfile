@@ -2,10 +2,8 @@
 # separate service -- vector_store.py deliberately runs it in embedded
 # on-disk mode (QdrantClient(path=...), see that file's own comment), not
 # client-server mode, so there's no separate Qdrant process to containerize.
-# Ollama likewise stays a host-level dependency (see docker-compose.yml's
-# OLLAMA_BASE_URL, pointed at host.docker.internal) rather than a service
-# here -- it's a GPU-benefiting daemon most dev setups already run outside
-# any container, same posture as the README's existing setup instructions.
+# Embeddings are Voyage AI (hosted API, Milestone 6.4) rather than a local
+# Ollama dependency, so there's no embeddings daemon to run here either.
 FROM python:3.12-slim
 
 # tesseract-ocr is a real, previously-documented requirement (README/

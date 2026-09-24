@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import time
 import uuid
 from collections import deque
@@ -12,12 +13,13 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 from starlette.concurrency import run_in_threadpool
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from insurance_loader import load_insurance_documents
-from vector_store import index_documents, semantic_search
+from vector_store import index_documents, semantic_search, count_chunks_by_source
 from llm_client import llm_complete
 from feedback_store import record_feedback
-from documents_store import save_documents, load_documents
+from documents_store import save_documents, load_documents, PROFESSIONAL_STORE
+from db import init_db
 from experiments import get_variant, log_experiment_result
 from dotenv import load_dotenv
 
@@ -87,7 +89,13 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
 
+init_db()
 documents_db = load_documents()
+
+# Classify-then-target pipeline results, kept in a separate store from
+# documents_db above so the two extraction strategies can sit side by side
+# for comparison instead of one overwriting the other.
+documents_db_professional = load_documents(store=PROFESSIONAL_STORE)
 
 # DECISION (UNIVERSAL, Milestone 5.2 -- history only, no query condensation
 # yet): in-memory dict keyed by session_id, deque(maxlen=...) caps stored
@@ -173,17 +181,86 @@ class FeedbackRequest(BaseModel):
     low_confidence: Optional[bool] = None
 
 
-def find_relevant_source_files(question: str) -> Optional[List[str]]:
+_YEAR_RE = re.compile(r'\b(19|20)\d{2}\b')
+
+
+def _normalize_policy_number(policy_number: str) -> str:
+    return re.sub(r"\s+", " ", policy_number.strip()).lower()
+
+
+def _group_by_policy_number() -> Dict[str, List[dict]]:
+    """All non-error documents_db entries, grouped by normalized policy
+    number -- a group with more than one entry is the same policy appearing
+    as multiple periods/renewals/endorsements, not multiple policies."""
+    families: Dict[str, List[dict]] = {}
+    for doc in documents_db.values():
+        if "error" in doc:
+            continue
+        policy_number = doc.get("policy_number")
+        if not policy_number:
+            continue
+        families.setdefault(_normalize_policy_number(policy_number), []).append(doc)
+    return families
+
+
+def _doc_years(doc: dict) -> set:
+    """Every 4-digit year this document's period touches, from the parsed
+    ISO date when available and from the raw string either way -- a raw
+    value like '01 July 2026' still yields '2026' even if parsing failed."""
+    years = set()
+    for field in ("period_from_iso", "period_to_iso", "period_from", "period_to"):
+        raw = doc.get(field)
+        if raw:
+            years |= {m.group(0) for m in _YEAR_RE.finditer(str(raw))}
+    return years
+
+
+def _sort_key(doc: dict) -> Tuple[int, str]:
+    """Higher is more recent. Prefers a parsed period end/start date;
+    falls back to upload time when dates couldn't be parsed at all, rather
+    than guessing an order from unparseable strings."""
+    iso = doc.get("period_to_iso") or doc.get("period_from_iso")
+    if iso:
+        return (2, iso)
+    extracted = doc.get("extracted_date")
+    if extracted:
+        return (1, extracted)
+    return (0, "")
+
+
+def _pick_latest(docs: List[dict]) -> Tuple[dict, List[dict]]:
+    ordered = sorted(docs, key=_sort_key, reverse=True)
+    return ordered[0], ordered[1:]
+
+
+def _describe_period(doc: dict) -> str:
+    return f"{doc.get('period_from') or '?'} to {doc.get('period_to') or '?'}"
+
+
+def find_relevant_source_files(question: str) -> Tuple[Optional[List[str]], Optional[str]]:
     """Scope retrieval to specific documents when the question names them.
 
     Matches the question text against known policy numbers, insured names,
     and insurers (substring, case-insensitive). Length-gated to avoid short
-    values matching incidentally. Returns None -- meaning search unscoped --
-    when nothing matches, so a generic question still searches everything.
+    values matching incidentally. Returns (None, None) -- meaning search
+    unscoped -- when nothing matches, so a generic question still searches
+    everything.
+
+    DECISION (fixes a real gap: same policy #, different period): a matched
+    policy number can belong to more than one indexed document -- a renewal,
+    endorsement, or extension of the same policy, each its own file/metadata
+    record. Blending all of them into one retrieval risks mixing one year's
+    premium/limit with another's. When the question names a period (a year
+    that matches exactly one document in the family), that one is used.
+    Otherwise the most recent by period_to/period_from (falling back to
+    upload time) is used, and the second return value carries a note --
+    built here in code, not left to the LLM to remember -- disclosing that
+    other periods exist so the caller can surface it in the answer.
     """
     q = question.lower()
     matches = set()
     insured_name_matches: Dict[str, List[dict]] = {}
+    policy_number_hits: Dict[str, dict] = {}
 
     for doc in documents_db.values():
         if "error" in doc:
@@ -194,7 +271,7 @@ def find_relevant_source_files(question: str) -> Optional[List[str]]:
 
         policy_number = doc.get("policy_number")
         if policy_number and len(policy_number) >= 4 and policy_number.lower() in q:
-            matches.add(source_file)
+            policy_number_hits[_normalize_policy_number(policy_number)] = doc
             continue
 
         # DECISION (UNIVERSAL, fixes the Milestone 3 known gap / ADR-0004
@@ -244,7 +321,31 @@ def find_relevant_source_files(question: str) -> Optional[List[str]]:
         if len(narrowed) == 1:
             matches.add(narrowed[0]["source_file"])
 
-    return sorted(matches) if matches else None
+    scope_note = None
+    if policy_number_hits:
+        families = _group_by_policy_number()
+        question_years = {m.group(0) for m in _YEAR_RE.finditer(q)}
+        for norm_pn, sample_doc in policy_number_hits.items():
+            family = families.get(norm_pn) or [sample_doc]
+            if len(family) == 1:
+                matches.add(family[0]["source_file"])
+                continue
+
+            year_matched = [d for d in family if question_years & _doc_years(d)] if question_years else []
+            if len(year_matched) == 1:
+                matches.add(year_matched[0]["source_file"])
+                continue
+
+            latest, others = _pick_latest(family)
+            matches.add(latest["source_file"])
+            other_periods = "; ".join(_describe_period(o) for o in others)
+            scope_note = (
+                f"Note: policy {sample_doc.get('policy_number')} has {len(family)} versions on file. "
+                f"This answer uses the most recent period on file ({_describe_period(latest)}). "
+                f"Other periods on file: {other_periods}. Ask by year to use one of those instead."
+            )
+
+    return (sorted(matches) if matches else None), scope_note
 
 
 def condense_query(question: str, history: deque) -> str:
@@ -321,7 +422,13 @@ async def extract_documents(request: Request):
     successful = []
     failed = []
     for meta in results["metadata"]:
-        doc_id = meta.get("policy_number") or meta.get("source_file", "unknown")
+        # DECISION (bug fix): keyed by source_file, not policy_number -- two
+        # files sharing a policy number (a renewal, an endorsement) used to
+        # collide on this key and silently overwrite each other, so only the
+        # last-extracted one ever made it into documents_db. source_file is
+        # unique per upload; policy-number grouping for "same policy,
+        # multiple periods" is done separately in find_relevant_source_files.
+        doc_id = meta.get("source_file", "unknown")
         documents_db[doc_id] = meta
         (failed if "error" in meta else successful).append(meta)
     save_documents(documents_db)
@@ -353,7 +460,63 @@ async def extract_documents(request: Request):
 
 @app.get("/documents", dependencies=[Depends(require_api_key)])
 async def list_documents():
-    return {"total": len(documents_db), "documents": list(documents_db.values())}
+    chunk_counts = await run_in_threadpool(count_chunks_by_source)
+    documents = [
+        {**doc, "chunks_indexed": chunk_counts.get(doc.get("source_file"), 0)}
+        for doc in documents_db.values()
+    ]
+    return {"total": len(documents), "documents": documents}
+
+
+@app.post("/extract/professional", dependencies=[Depends(require_api_key)])
+@limiter.limit("5/minute")
+async def extract_documents_professional(request: Request):
+    """Same extraction pipeline as /extract, but using the classify-then-target
+    declarations-window selection (insurance_loader.select_declarations_window)
+    instead of a blind text[:8000] truncation. Writes to documents_db_professional
+    / the PROFESSIONAL_STORE table row -- entirely separate from /extract's
+    documents_db -- so the two extraction strategies can be compared side by
+    side on the same document set instead of one overwriting the other.
+
+    Deliberately does NOT re-run index_documents(): chunking/embedding for
+    /query is identical either way (Milestone 1 steps 1-2), so this only
+    needs to re-run the metadata extraction step to produce a comparable table.
+    """
+    logger.info("Professional-pipeline extraction requested")
+    try:
+        results = await run_in_threadpool(load_insurance_documents, None, "classify_then_target")
+    except Exception as e:
+        logger.exception("Document loading failed (professional pipeline)")
+        raise HTTPException(status_code=500, detail=f"Document loading failed: {str(e)}")
+
+    successful = []
+    failed = []
+    for meta in results["metadata"]:
+        doc_id = meta.get("source_file", "unknown")
+        documents_db_professional[doc_id] = meta
+        (failed if "error" in meta else successful).append(meta)
+    save_documents(documents_db_professional, store=PROFESSIONAL_STORE)
+
+    logger.info(
+        "Professional-pipeline extraction complete: %d successful, %d failed",
+        len(successful), len(failed),
+    )
+
+    return {
+        "total": len(successful) + len(failed),
+        "successful": successful,
+        "failed": failed,
+    }
+
+
+@app.get("/documents/professional", dependencies=[Depends(require_api_key)])
+async def list_documents_professional():
+    chunk_counts = await run_in_threadpool(count_chunks_by_source)
+    documents = [
+        {**doc, "chunks_indexed": chunk_counts.get(doc.get("source_file"), 0)}
+        for doc in documents_db_professional.values()
+    ]
+    return {"total": len(documents), "documents": documents}
 
 
 @app.get("/health")
@@ -430,9 +593,11 @@ async def query_documents(request: Request, body: QueryRequest):
             if search_query != body.question:
                 logger.info("Condensed query: %r -> %r", body.question, search_query)
 
-        source_files = find_relevant_source_files(search_query)
+        source_files, policy_scope_note = find_relevant_source_files(search_query)
         if source_files:
             logger.info("Scoping search to %d matched document(s): %s", len(source_files), source_files)
+        if policy_scope_note:
+            logger.info(policy_scope_note)
         # Same run_in_threadpool reasoning as /extract above: semantic_search
         # (Qdrant + embedding call) and llm_complete (Groq call) below are
         # both blocking network I/O -- without offloading them, one slow
@@ -462,6 +627,8 @@ async def query_documents(request: Request, body: QueryRequest):
                 "to the question to be trustworthy -- try rephrasing, naming the policy "
                 "directly, or confirm the right document has been extracted and indexed."
             )
+            if policy_scope_note:
+                answer += f"\n\n{policy_scope_note}"
             sources = [
                 {"source_file": c["source_file"], "policy_number": c.get("policy_number"), "score": c["score"]}
                 for c in chunks
@@ -485,6 +652,7 @@ async def query_documents(request: Request, body: QueryRequest):
                 "chunks_searched": len(chunks),
                 "session_id": session_id,
                 "low_confidence": True,
+                "policy_scope_note": policy_scope_note,
             }
 
         if chunks:
@@ -594,6 +762,9 @@ async def query_documents(request: Request, body: QueryRequest):
             max_tokens=500,
         )
 
+        if policy_scope_note:
+            answer += f"\n\n{policy_scope_note}"
+
         sources = [{"source_file": c["source_file"], "policy_number": c.get("policy_number"), "score": c["score"]} for c in chunks]
 
         history.append({"question": body.question, "answer": answer})
@@ -619,6 +790,7 @@ async def query_documents(request: Request, body: QueryRequest):
             "chunks_searched": len(chunks),
             "session_id": session_id,
             "low_confidence": False,
+            "policy_scope_note": policy_scope_note,
         }
     except Exception as e:
         logger.exception("Query failed")
