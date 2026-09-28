@@ -419,6 +419,16 @@ async def extract_documents(request: Request):
         logger.exception("Document loading failed")
         raise HTTPException(status_code=500, detail=f"Document loading failed: {str(e)}")
 
+    # DECISION (bug fix): reload from Postgres before merging, instead of
+    # merging into whatever documents_db has accumulated in memory since
+    # process start. Without this, a row deleted directly in Postgres (or
+    # left over from a bad run against a misconfigured DATA_FOLDER) keeps
+    # getting silently re-persisted by every later /extract call, since
+    # save_documents() writes back the full in-memory dict -- stale entries
+    # included -- not just this run's results.
+    documents_db.clear()
+    documents_db.update(load_documents())
+
     successful = []
     failed = []
     for meta in results["metadata"]:
@@ -488,6 +498,11 @@ async def extract_documents_professional(request: Request):
     except Exception as e:
         logger.exception("Document loading failed (professional pipeline)")
         raise HTTPException(status_code=500, detail=f"Document loading failed: {str(e)}")
+
+    # See the matching comment in extract_documents() above -- same reload-
+    # before-merge fix, same reason.
+    documents_db_professional.clear()
+    documents_db_professional.update(load_documents(store=PROFESSIONAL_STORE))
 
     successful = []
     failed = []
