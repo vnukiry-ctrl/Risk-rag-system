@@ -67,11 +67,9 @@ services:
     region: oregon
     envVars:
       - key: API_BASE_URL
-        # Render derives each service's public URL from its `name` above:
-        # https://<name>.onrender.com. If "insurance-rag-backend" was
-        # already taken, Render appends a random suffix instead -- check
-        # the actual URL in the dashboard after first deploy and update
-        # this if so.
-        value: https://insurance-rag-backend.onrender.com
+        # "insurance-rag-backend" was already taken, so Render appended a
+        # random suffix to the actual backend URL -- confirmed in the
+        # dashboard after first deploy.
+        value: https://insurance-rag-backend-7zsg.onrender.com
       - key: API_KEY
         sync: false # must match one of the backend's API_KEYS entries
