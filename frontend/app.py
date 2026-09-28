@@ -24,6 +24,14 @@ API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
 # so a local backend running without auth still works with no extra setup.
 API_KEY = os.getenv("API_KEY", "")
 API_HEADERS = {"X-API-Key": API_KEY} if API_KEY else {}
+# /extract runs every document through the pipeline sequentially in one
+# request (PDF/OCR extraction + one LLM call per document + embedding
+# indexing at the end) -- on Render's starter plan, 16 documents can take
+# well past 5 minutes. 300s was too tight and produced a client-side read
+# timeout even when the backend was still working (save_documents() only
+# writes to Postgres once, at the very end, so there's no partial progress
+# to show for a request that timed out early).
+EXTRACT_TIMEOUT = 1200
 
 st.sidebar.title("🏢 Insurance RAG System")
 st.sidebar.markdown("---")
@@ -69,7 +77,7 @@ if page == "🏠 Home":
     if st.button("📥 Extract Documents", key="extract_home"):
         with st.spinner("Extracting..."):
             try:
-                response = requests.post(f"{API_BASE_URL}/extract", headers=API_HEADERS, timeout=300)
+                response = requests.post(f"{API_BASE_URL}/extract", headers=API_HEADERS, timeout=EXTRACT_TIMEOUT)
                 if response.status_code == 200:
                     data = response.json()
                     st.success(f"✅ Extracted {data.get('total', 0)} documents "
@@ -99,7 +107,7 @@ elif page == "📄 Documents":
         if run_extract:
             with st.spinner("Extracting... this calls the LLM once per document"):
                 try:
-                    resp = requests.post(f"{API_BASE_URL}{extract_endpoint}", headers=API_HEADERS, timeout=300)
+                    resp = requests.post(f"{API_BASE_URL}{extract_endpoint}", headers=API_HEADERS, timeout=EXTRACT_TIMEOUT)
                     if resp.status_code == 200:
                         data = resp.json()
                         st.success(f"Done: {len(data.get('successful', []))} succeeded, {len(data.get('failed', []))} failed")
