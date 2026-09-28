@@ -9,7 +9,6 @@ from models import Document, FieldVerification, PolicyData
 logger = logging.getLogger(__name__)
 
 DEFAULT_STORE = "default"
-PROFESSIONAL_STORE = "professional"
 
 _POLICY_FIELDS = [
     "policy_number", "insurance_type", "insurance_company", "broker",

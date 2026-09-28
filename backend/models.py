@@ -6,10 +6,14 @@ from sqlmodel import Field, SQLModel
 
 
 class Document(SQLModel, table=True):
-    """One row per extracted source file -- the source table. 'store'
-    separates the default pipeline's results from the professional
-    (classify-then-target) pipeline's, matching the two side-by-side JSON
-    files this replaces. 'error' is set instead of a PolicyData/
+    """One row per extracted source file -- the source table. 'store' used
+    to separate the default pipeline's results from a second
+    classify-then-target ("professional") pipeline's, run side by side for
+    comparison; that second pipeline was removed 2026-09-28 (see
+    docs/adr/0014-remove-professional-extraction-pipeline.md) and only
+    'default' is written going forward, but the column stays generic rather
+    than being collapsed, since existing rows and the unique constraint
+    below both key on it. 'error' is set instead of a PolicyData/
     FieldVerification row when extraction failed for this file."""
 
     __tablename__ = "documents"

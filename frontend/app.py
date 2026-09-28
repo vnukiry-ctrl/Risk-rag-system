@@ -91,11 +91,6 @@ if page == "🏠 Home":
 elif page == "📄 Documents":
     st.title("📄 Extracted Documents")
 
-    # DECISION: two tabs, two independent backend stores (documents_db vs
-    # documents_db_professional) -- rendering both from the same helper below
-    # so the "old way" (head_truncate) and "professional way"
-    # (classify_then_target) results can be compared side by side on the
-    # same document set instead of one overwriting the other.
     def render_documents_tab(list_endpoint: str, extract_endpoint: str, key_prefix: str):
         col1, col2, col3 = st.columns([2, 1, 1])
         with col2:
@@ -198,11 +193,7 @@ elif page == "📄 Documents":
         except Exception as e:
             st.error(f"Connection error: {str(e)}")
 
-    tab_old, tab_pro = st.tabs(["🕰️ Old Way (head truncation)", "🧭 Professional Way (classify-then-target)"])
-    with tab_old:
-        render_documents_tab("/documents", "/extract", "old")
-    with tab_pro:
-        render_documents_tab("/documents/professional", "/extract/professional", "pro")
+    render_documents_tab("/documents", "/extract", "docs")
 
 
 elif page == "🔍 Search":

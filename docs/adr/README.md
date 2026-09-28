@@ -42,3 +42,4 @@ What this makes easier, what it makes harder, and what would need to be true to 
 | [0011](0011-topk-tuned-from-real-data.md) | Top-k tuned from real data (k=5 -> k=2) | Accepted |
 | [0012](0012-policy-family-resolution.md) | Policy-family resolution for same policy number, multiple periods | Accepted, B0621FMOUN000426 case verified 2026-09-21; ALCOA108 case still pending (rate-limited during verification) |
 | [0013](0013-voyage-law-embeddings.md) | Voyage AI `voyage-law-2` embeddings, replacing Ollama `nomic-embed-text` | Accepted, pending golden-set re-verification |
+| [0014](0014-remove-professional-extraction-pipeline.md) | Remove the professional (classify-then-target) extraction pipeline | Accepted |

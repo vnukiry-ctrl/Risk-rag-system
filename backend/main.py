@@ -18,7 +18,7 @@ from insurance_loader import load_insurance_documents
 from vector_store import index_documents, semantic_search, count_chunks_by_source
 from llm_client import llm_complete
 from feedback_store import record_feedback
-from documents_store import save_documents, load_documents, PROFESSIONAL_STORE
+from documents_store import save_documents, load_documents
 from db import init_db
 from experiments import get_variant, log_experiment_result
 from dotenv import load_dotenv
@@ -91,11 +91,6 @@ app.add_middleware(SlowAPIMiddleware)
 
 init_db()
 documents_db = load_documents()
-
-# Classify-then-target pipeline results, kept in a separate store from
-# documents_db above so the two extraction strategies can sit side by side
-# for comparison instead of one overwriting the other.
-documents_db_professional = load_documents(store=PROFESSIONAL_STORE)
 
 # DECISION (UNIVERSAL, Milestone 5.2 -- history only, no query condensation
 # yet): in-memory dict keyed by session_id, deque(maxlen=...) caps stored
@@ -474,62 +469,6 @@ async def list_documents():
     documents = [
         {**doc, "chunks_indexed": chunk_counts.get(doc.get("source_file"), 0)}
         for doc in documents_db.values()
-    ]
-    return {"total": len(documents), "documents": documents}
-
-
-@app.post("/extract/professional", dependencies=[Depends(require_api_key)])
-@limiter.limit("5/minute")
-async def extract_documents_professional(request: Request):
-    """Same extraction pipeline as /extract, but using the classify-then-target
-    declarations-window selection (insurance_loader.select_declarations_window)
-    instead of a blind text[:8000] truncation. Writes to documents_db_professional
-    / the PROFESSIONAL_STORE table row -- entirely separate from /extract's
-    documents_db -- so the two extraction strategies can be compared side by
-    side on the same document set instead of one overwriting the other.
-
-    Deliberately does NOT re-run index_documents(): chunking/embedding for
-    /query is identical either way (Milestone 1 steps 1-2), so this only
-    needs to re-run the metadata extraction step to produce a comparable table.
-    """
-    logger.info("Professional-pipeline extraction requested")
-    try:
-        results = await run_in_threadpool(load_insurance_documents, None, "classify_then_target")
-    except Exception as e:
-        logger.exception("Document loading failed (professional pipeline)")
-        raise HTTPException(status_code=500, detail=f"Document loading failed: {str(e)}")
-
-    # See the matching comment in extract_documents() above -- same reload-
-    # before-merge fix, same reason.
-    documents_db_professional.clear()
-    documents_db_professional.update(load_documents(store=PROFESSIONAL_STORE))
-
-    successful = []
-    failed = []
-    for meta in results["metadata"]:
-        doc_id = meta.get("source_file", "unknown")
-        documents_db_professional[doc_id] = meta
-        (failed if "error" in meta else successful).append(meta)
-    save_documents(documents_db_professional, store=PROFESSIONAL_STORE)
-
-    logger.info(
-        "Professional-pipeline extraction complete: %d successful, %d failed",
-        len(successful), len(failed),
-    )
-
-    return {
-        "total": len(successful) + len(failed),
-        "successful": successful,
-        "failed": failed,
-    }
-
-
-@app.get("/documents/professional", dependencies=[Depends(require_api_key)])
-async def list_documents_professional():
-    chunk_counts = await run_in_threadpool(count_chunks_by_source)
-    documents = [
-        {**doc, "chunks_indexed": chunk_counts.get(doc.get("source_file"), 0)}
-        for doc in documents_db_professional.values()
     ]
     return {"total": len(documents), "documents": documents}
 

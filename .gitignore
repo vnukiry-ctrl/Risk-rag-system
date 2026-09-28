@@ -11,7 +11,6 @@ backend/feedback_log.jsonl
 backend/experiments_log.jsonl
 backend/documents_db.json
 backend/documents_db_old_way.json
-backend/documents_db_professional.json
 *.log
 
 # Environment

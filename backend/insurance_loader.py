@@ -51,35 +51,6 @@ def normalize_text(text: str) -> str:
     return text.strip()
 
 
-# DECISION (DOMAIN-SPECIFIC): deliberately ONLY multi-word structural labels
-# ("policy period", "named insured"), not single common words ("insured",
-# "policy", "premium"). A first version scored on single words too and it
-# backfired: legal wording/insuring-agreement sections use "insured",
-# "policy", "insurer" in nearly every sentence, so they out-scored the
-# actual declarations page, which states each label once. Multi-word labels
-# only appear as page headers/field labels, which is exactly what makes a
-# declarations page a declarations page. Rewrite for a new domain (e.g.
-# "effective date" / "parties" / "signature block" for contracts).
-_DECLARATIONS_KEYWORDS = [
-    "named insured", "policy number", "policy no", "policy period",
-    "period of insurance", "effective date", "inception date",
-    "expiration date", "annual premium", "total premium",
-    "limit of liability", "coverage limit", "deductible", "coverholder",
-    "declarations", "schedule of",
-]
-
-# Declarations pages are dense with actual values (dollar amounts, dates) --
-# wording/insuring-agreement prose sections are not, even though they reuse
-# "insured"/"policy"/"premium" constantly. These count as strong signals too.
-_DATE_PATTERN = re.compile(
-    r'\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b'
-    r'|\b\d{4}-\d{2}-\d{2}\b'
-    r'|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d{1,2},?\s+\d{4}\b'
-    r'|\b\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d{4}\b',
-    re.IGNORECASE,
-)
-
-
 # Grounding/self-verification (gap flagged in review): scalar fields the LLM
 # extracts a specific value for, and which we can therefore ask it to back
 # with a verbatim quote. Deliberately excludes key_coverages/exclusions
@@ -209,90 +180,24 @@ def verify_grounded_fields(metadata: Dict, quotes: Dict, source_text: str) -> Di
     return verification
 
 
-_LABEL_RE = re.compile(
-    r'(?:' + '|'.join(re.escape(kw) for kw in _DECLARATIONS_KEYWORDS) + r')\s*:',
-    re.IGNORECASE,
-)
-
-
-def _score_window(window: str) -> int:
-    # DECISION: a bare keyword mention isn't enough -- "as set forth in the
-    # Declarations" or "the Effective Date of this Policy" reference these
-    # terms constantly throughout ordinary wording/insuring-agreement prose,
-    # not just on the actual declarations page (confirmed: those bare
-    # mentions alone outscored the real page on the 269K-char D&O EPL
-    # policy). What a declarations page actually looks like is a LABEL
-    # immediately followed by a colon and a value ("Named Insured: The
-    # Board of..."), so only that pattern counts -- a structural test, not
-    # one tuned to any specific document. $/date hits still only count
-    # alongside at least one such label, for the same reason as before: a
-    # bare cluster of $ signs (a coverage-limits schedule) isn't evidence
-    # of a declarations page on its own.
-    label_hits = len(_LABEL_RE.findall(window))
-    if label_hits == 0:
-        return 0
-    dollar_hits = window.count('$')
-    date_hits = len(_DATE_PATTERN.findall(window))
-    return 5 * label_hits + 2 * dollar_hits + 2 * date_hits
-
-
-def select_declarations_window(text: str, max_chars: int = 8000, window_size: int = 2000, window_overlap: int = 200) -> str:
-    """Classify-then-target: instead of blindly taking text[:max_chars] (which
-    can land entirely on front-matter boilerplate for a document whose real
-    declarations page sits tens of thousands of characters in), score
-    overlapping windows by declarations-vocabulary density and keep only the
-    highest-scoring ones, up to max_chars total.
-
-    Selected windows are restored to their original document order before
-    being joined, so the LLM still reads a coherent passage rather than
-    disconnected fragments in an arbitrary order.
-    """
-    if len(text) <= max_chars:
-        return text
-
-    step = window_size - window_overlap
-    windows = []
-    start = 0
-    while start < len(text):
-        end = min(start + window_size, len(text))
-        windows.append((start, end, text[start:end]))
-        if end == len(text):
-            break
-        start += step
-
-    scored = sorted(windows, key=lambda w: _score_window(w[2]), reverse=True)
-
-    selected = []
-    total = 0
-    for w in scored:
-        if selected and total + len(w[2]) > max_chars:
-            continue
-        selected.append(w)
-        total += len(w[2])
-        if total >= max_chars:
-            break
-
-    selected.sort(key=lambda w: w[0])
-    logger.debug(
-        "select_declarations_window: kept %d/%d windows (%d chars) from a %d-char document",
-        len(selected), len(windows), total, len(text),
-    )
-    return "\n\n".join(w[2] for w in selected)
-
-
 class InsuranceDocumentParserLLM:
-    def extract_metadata_with_llm(self, text: str, filename: str, extraction_strategy: str = "head_truncate") -> Dict:
+    def extract_metadata_with_llm(self, text: str, filename: str) -> Dict:
         """Use Groq to intelligently extract metadata from insurance document"""
 
-        if extraction_strategy == "classify_then_target":
-            text_sample = select_declarations_window(text)
-        else:
-            # DECISION (UNIVERSAL, value needs re-checking per project): hard
-            # truncation before the fields-of-interest are guaranteed to appear.
-            # A doc whose key fields sit past char 8000 (long riders/addenda)
-            # silently loses them here -- verify against your actual document
-            # lengths rather than reusing 8000.
-            text_sample = text[:8000]
+        # DECISION (UNIVERSAL, value needs re-checking per project): hard
+        # truncation before the fields-of-interest are guaranteed to appear.
+        # A doc whose key fields sit past char 8000 (long riders/addenda)
+        # silently loses them here -- verify against your actual document
+        # lengths rather than reusing 8000.
+        #
+        # A "classify-then-target" alternative (score overlapping windows by
+        # declarations-vocabulary density, stitch together the highest-
+        # scoring ones instead of blindly taking text[:8000]) was tried and
+        # removed 2026-09-28 -- see docs/adr/0014-remove-professional-
+        # extraction-pipeline.md for what it was, how it scored against this
+        # head_truncate baseline on the real document set, and why it didn't
+        # stay.
+        text_sample = text[:8000]
 
         # DECISION (DOMAIN-SPECIFIC): entire prompt below -- field list,
         # few-shot hints (policy-number formats, insurer/broker phrasing) --
@@ -423,7 +328,7 @@ CRITICAL RULES:
             metadata["extracted_date"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             metadata["source_file"] = filename
             metadata["extraction_method"] = f"{LLM_PROVIDER} LLM ({MODEL})"
-            metadata["extraction_strategy"] = extraction_strategy
+            metadata["extraction_strategy"] = "head_truncate"
             metadata["field_verification"] = field_verification
             metadata["flagged_fields"] = flagged_fields
 
@@ -436,9 +341,9 @@ CRITICAL RULES:
             logger.error("%s: LLM API call failed", filename, exc_info=True)
             return _error_record(filename, str(e))
 
-    def parse_document(self, text: str, filename: str, extraction_strategy: str = "head_truncate") -> Tuple[Dict, str]:
+    def parse_document(self, text: str, filename: str) -> Tuple[Dict, str]:
         """Parse insurance document using Groq LLM"""
-        metadata = self.extract_metadata_with_llm(text, filename, extraction_strategy=extraction_strategy)
+        metadata = self.extract_metadata_with_llm(text, filename)
         return metadata, text
 
 
@@ -535,7 +440,7 @@ def _is_supported_extension(ext: str) -> bool:
     return ext in _PLAIN_TEXT_EXTENSIONS or ext in _TEXT_EXTRACTORS
 
 
-def load_insurance_documents(data_folder: Optional[str] = None, extraction_strategy: str = "head_truncate") -> Dict:
+def load_insurance_documents(data_folder: Optional[str] = None) -> Dict:
     """Load and parse all insurance documents using Groq LLM."""
     if data_folder is None:
         data_folder = DEFAULT_DATA_FOLDER
@@ -592,7 +497,7 @@ def load_insurance_documents(data_folder: Optional[str] = None, extraction_strat
 
             text = normalize_text(text)
 
-            metadata, parent = parser.parse_document(text, filename, extraction_strategy=extraction_strategy)
+            metadata, parent = parser.parse_document(text, filename)
 
             results["metadata"].append(metadata)
 
